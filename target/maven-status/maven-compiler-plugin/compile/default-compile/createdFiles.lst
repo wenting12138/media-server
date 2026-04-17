@@ -24,6 +24,7 @@ com\wenting\mediaserver\bootstrap\MediaServerBootstrap.class
 com\wenting\mediaserver\config\MediaServerConfig.class
 com\wenting\mediaserver\protocol\rtp\RtpHeader.class
 com\wenting\mediaserver\protocol\rtp\RtpUdpMediaPlane$4.class
+com\wenting\mediaserver\protocol\rtp\UdpPortPairPool.class
 com\wenting\mediaserver\protocol\rtp\RtpUdpMediaPlane$1.class
 com\wenting\mediaserver\bootstrap\MediaServerBootstrap$1.class
 com\wenting\mediaserver\protocol\rtp\RtpUdpMediaPlane$PublisherRtpReceiver.class

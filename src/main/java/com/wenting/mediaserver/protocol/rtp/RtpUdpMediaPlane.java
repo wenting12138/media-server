@@ -27,14 +27,22 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(RtpUdpMediaPlane.class);
 
     private final EventLoopGroup worker;
+    private final UdpPortPairPool portPool;
     /** Outbound RTP (and matching RTCP sink for Transport symmetry). */
     private volatile DatagramChannel egressRtpChannel;
     private volatile DatagramChannel egressRtcpSinkChannel;
+    private volatile int egressEvenPort = -1;
     private final Object egressLock = new Object();
     private final AtomicBoolean egressFirstPacketLogged = new AtomicBoolean(false);
 
-    public RtpUdpMediaPlane(EventLoopGroup worker) {
+    public RtpUdpMediaPlane(EventLoopGroup worker, int portRangeMin, int portRangeMax) {
         this.worker = worker;
+        this.portPool = new UdpPortPairPool(portRangeMin, portRangeMax);
+        log.info(
+                "RTP UDP port pool initialized range {}-{} pairs={}",
+                portPool.portRangeMin(),
+                portPool.portRangeMax(),
+                portPool.pairCapacity());
     }
 
     public void ensureEgressStarted() throws InterruptedException {
@@ -44,22 +52,14 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
             }
             Bootstrap rtpB = newBootstrapOutbound();
             Bootstrap rtcpB = newBootstrapRtcpDiscard();
-            for (int i = 0; i < 64; i++) {
-                DatagramChannel rtp = (DatagramChannel) rtpB.bind(0).sync().channel();
-                int p = ((InetSocketAddress) rtp.localAddress()).getPort();
-                if ((p & 1) != 0) {
-                    rtp.close().sync();
-                    continue;
-                }
-                try {
-                    DatagramChannel rtcp = (DatagramChannel) rtcpB.bind(p + 1).sync().channel();
-                    this.egressRtpChannel = rtp;
-                    this.egressRtcpSinkChannel = rtcp;
-                    log.info("RTP UDP egress server_port {}-{}", p, p + 1);
-                    return;
-                } catch (Exception e) {
-                    rtp.close().sync();
-                }
+            DatagramChannel[] pair = allocatePortPair(rtpB, rtcpB);
+            if (pair != null) {
+                this.egressRtpChannel = pair[0];
+                this.egressRtcpSinkChannel = pair[1];
+                int p = ((InetSocketAddress) pair[0].localAddress()).getPort();
+                this.egressEvenPort = p;
+                log.info("RTP UDP egress server_port {}-{}", p, p + 1);
+                return;
             }
             throw new IllegalStateException("could not allocate RTP/RTCP egress UDP port pair");
         }
@@ -134,10 +134,11 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
 
     /**
      * Opens RTP (even port) + RTCP (odd) UDP listeners. RTP datagram payloads are passed to
-     * {@link PublishedStream#onPublisherVideoRtp} after {@link PublisherRtpReceiver#bindSink(PublishedStream)}.
+     * {@link PublishedStream#onPublisherVideoRtp} after {@link PublisherRtpReceiver#bindSink(PublishedStream,int)}.
      */
     public PublisherRtpReceiver openPublisherReceiver() throws InterruptedException {
         final AtomicReference<PublishedStream> sink = new AtomicReference<PublishedStream>();
+        final AtomicReference<Integer> sinkTrackId = new AtomicReference<Integer>(0);
         final AtomicBoolean ingressFirstPacketLogged = new AtomicBoolean(false);
 
         Bootstrap rtpBootstrap = new Bootstrap();
@@ -162,7 +163,12 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
                                 }
                                 ByteBuf copy = content.retainedDuplicate();
                                 try {
-                                    ps.onPublisherVideoRtp(copy);
+                                    Integer trackId = sinkTrackId.get();
+                                    if (trackId != null && trackId.intValue() == 1) {
+                                        ps.onPublisherAudioRtp(copy);
+                                    } else {
+                                        ps.onPublisherVideoRtp(copy);
+                                    }
                                 } finally {
                                     ReferenceCountUtil.release(copy);
                                 }
@@ -185,34 +191,59 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
                     }
                 });
 
-        DatagramChannel rtp = null;
-        DatagramChannel rtcp = null;
-        for (int attempt = 0; attempt < 64; attempt++) {
-            DatagramChannel rtpCand = (DatagramChannel) rtpBootstrap.bind(0).sync().channel();
-            int p = ((InetSocketAddress) rtpCand.localAddress()).getPort();
-            if ((p & 1) != 0) {
-                rtpCand.close().sync();
-                continue;
-            }
-            try {
-                DatagramChannel rtcpCand = (DatagramChannel) rtcpBootstrap.bind(p + 1).sync().channel();
-                rtp = rtpCand;
-                rtcp = rtcpCand;
-                break;
-            } catch (Exception e) {
-                rtpCand.close().sync();
-            }
-        }
+        DatagramChannel[] pair = allocatePortPair(rtpBootstrap, rtcpBootstrap);
+        DatagramChannel rtp = pair == null ? null : pair[0];
+        DatagramChannel rtcp = pair == null ? null : pair[1];
         if (rtp == null || rtcp == null) {
             throw new IllegalStateException("could not allocate RTP/RTCP UDP port pair");
         }
 
-        log.debug("publisher RTP/RTCP UDP ports {} / {}", serverPort(rtp), serverPort(rtcp));
-        return new PublisherRtpReceiver(sink, rtp, rtcp);
+        int evenPort = serverPort(rtp);
+        log.debug("publisher RTP/RTCP UDP ports {} / {}", evenPort, serverPort(rtcp));
+        return new PublisherRtpReceiver(sink, sinkTrackId, rtp, rtcp, evenPort);
     }
 
     private static int serverPort(DatagramChannel ch) {
         return ((InetSocketAddress) ch.localAddress()).getPort();
+    }
+
+    private DatagramChannel[] allocatePortPair(Bootstrap rtpBootstrap, Bootstrap rtcpBootstrap) throws InterruptedException {
+        int attempts = portPool.pairCapacity();
+        for (int i = 0; i < attempts; i++) {
+            Integer pObj = portPool.acquireEvenPort();
+            if (pObj == null) {
+                break;
+            }
+            int p = pObj.intValue();
+            DatagramChannel[] pair = tryBindPair(rtpBootstrap, rtcpBootstrap, p);
+            if (pair != null) {
+                return pair;
+            }
+            portPool.releaseEvenPort(p);
+        }
+        return null;
+    }
+
+    private void releaseEvenPort(int evenPort) {
+        portPool.releaseEvenPort(evenPort);
+    }
+
+    private static DatagramChannel[] tryBindPair(Bootstrap rtpBootstrap, Bootstrap rtcpBootstrap, int rtpPort)
+            throws InterruptedException {
+        DatagramChannel rtp = null;
+        try {
+            log.debug("RTP UDP allocate try server_port {}-{}", rtpPort, rtpPort + 1);
+            rtp = (DatagramChannel) rtpBootstrap.bind(rtpPort).sync().channel();
+            DatagramChannel rtcp = (DatagramChannel) rtcpBootstrap.bind(rtpPort + 1).sync().channel();
+            log.info("RTP UDP allocate success server_port {}-{}", rtpPort, rtpPort + 1);
+            return new DatagramChannel[]{rtp, rtcp};
+        } catch (Exception e) {
+            if (rtp != null) {
+                rtp.close().sync();
+            }
+            log.debug("RTP UDP allocate failed server_port {}-{}: {}", rtpPort, rtpPort + 1, e.toString());
+            return null;
+        }
     }
 
     @Override
@@ -226,18 +257,31 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
                 egressRtcpSinkChannel.close();
                 egressRtcpSinkChannel = null;
             }
+            if (egressEvenPort > 0) {
+                releaseEvenPort(egressEvenPort);
+                egressEvenPort = -1;
+            }
         }
     }
 
-    public static final class PublisherRtpReceiver {
+    public final class PublisherRtpReceiver {
         private final AtomicReference<PublishedStream> sink;
+        private final AtomicReference<Integer> sinkTrackId;
         private final DatagramChannel rtpChannel;
         private final DatagramChannel rtcpChannel;
+        private final int evenPort;
 
-        private PublisherRtpReceiver(AtomicReference<PublishedStream> sink, DatagramChannel rtp, DatagramChannel rtcp) {
+        private PublisherRtpReceiver(
+                AtomicReference<PublishedStream> sink,
+                AtomicReference<Integer> sinkTrackId,
+                DatagramChannel rtp,
+                DatagramChannel rtcp,
+                int evenPort) {
             this.sink = sink;
+            this.sinkTrackId = sinkTrackId;
             this.rtpChannel = rtp;
             this.rtcpChannel = rtcp;
+            this.evenPort = evenPort;
         }
 
         public int serverRtpPort() {
@@ -248,14 +292,17 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
             return ((InetSocketAddress) rtcpChannel.localAddress()).getPort();
         }
 
-        public void bindSink(PublishedStream publishedStream) {
+        public void bindSink(PublishedStream publishedStream, int trackId) {
             sink.set(publishedStream);
+            sinkTrackId.set(trackId);
         }
 
         public void close() {
             sink.set(null);
+            sinkTrackId.set(0);
             rtpChannel.close();
             rtcpChannel.close();
+            releaseEvenPort(evenPort);
         }
     }
 }

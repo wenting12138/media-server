@@ -30,15 +30,22 @@ public final class PublishedStream {
     private volatile String sdp;
     private volatile Channel publisherChannel;
     private final CopyOnWriteArrayList<Channel> subscribers = new CopyOnWriteArrayList<Channel>();
-    private final CopyOnWriteArrayList<InetSocketAddress> udpSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
+    private final CopyOnWriteArrayList<InetSocketAddress> udpVideoSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
+    private final CopyOnWriteArrayList<InetSocketAddress> udpAudioSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
     private volatile RtpUdpMediaPlane rtpUdpPlane;
     private final H264RtpDepacketizer h264 = new H264RtpDepacketizer();
-    private final AtomicLong inPackets = new AtomicLong();
-    private final AtomicLong inBytes = new AtomicLong();
-    private final AtomicLong outTcpPackets = new AtomicLong();
-    private final AtomicLong outTcpBytes = new AtomicLong();
-    private final AtomicLong outUdpPackets = new AtomicLong();
-    private final AtomicLong outUdpBytes = new AtomicLong();
+    private final AtomicLong videoInPackets = new AtomicLong();
+    private final AtomicLong videoInBytes = new AtomicLong();
+    private final AtomicLong videoOutTcpPackets = new AtomicLong();
+    private final AtomicLong videoOutTcpBytes = new AtomicLong();
+    private final AtomicLong videoOutUdpPackets = new AtomicLong();
+    private final AtomicLong videoOutUdpBytes = new AtomicLong();
+    private final AtomicLong audioInPackets = new AtomicLong();
+    private final AtomicLong audioInBytes = new AtomicLong();
+    private final AtomicLong audioOutTcpPackets = new AtomicLong();
+    private final AtomicLong audioOutTcpBytes = new AtomicLong();
+    private final AtomicLong audioOutUdpPackets = new AtomicLong();
+    private final AtomicLong audioOutUdpBytes = new AtomicLong();
     private volatile long statsLogAtMs = System.currentTimeMillis();
 
     public PublishedStream(StreamKey key, MediaSession publisherSession) {
@@ -78,15 +85,27 @@ public final class PublishedStream {
         this.rtpUdpPlane = plane;
     }
 
-    public void addUdpSubscriber(InetSocketAddress rtpDestination) {
+    public void addUdpVideoSubscriber(InetSocketAddress rtpDestination) {
         if (rtpDestination != null) {
-            udpSubscribers.addIfAbsent(rtpDestination);
+            udpVideoSubscribers.addIfAbsent(rtpDestination);
         }
     }
 
-    public void removeUdpSubscriber(InetSocketAddress rtpDestination) {
+    public void removeUdpVideoSubscriber(InetSocketAddress rtpDestination) {
         if (rtpDestination != null) {
-            udpSubscribers.remove(rtpDestination);
+            udpVideoSubscribers.remove(rtpDestination);
+        }
+    }
+
+    public void addUdpAudioSubscriber(InetSocketAddress rtpDestination) {
+        if (rtpDestination != null) {
+            udpAudioSubscribers.addIfAbsent(rtpDestination);
+        }
+    }
+
+    public void removeUdpAudioSubscriber(InetSocketAddress rtpDestination) {
+        if (rtpDestination != null) {
+            udpAudioSubscribers.remove(rtpDestination);
         }
     }
 
@@ -96,8 +115,8 @@ public final class PublishedStream {
     public void onPublisherVideoRtp(ByteBuf rtp) {
         publisherSession.touch();
         int rtpBytes = rtp.readableBytes();
-        inPackets.incrementAndGet();
-        inBytes.addAndGet(rtpBytes);
+        videoInPackets.incrementAndGet();
+        videoInBytes.addAndGet(rtpBytes);
         h264.ingest(rtp, nal -> {
             try {
                 if (log.isTraceEnabled() && nal != null && nal.readableBytes() > 5) {
@@ -108,6 +127,28 @@ public final class PublishedStream {
                 ReferenceCountUtil.release(nal);
             }
         });
+        relayRtp(rtp, rtpBytes, 0, udpVideoSubscribers, true);
+        maybeLogStats();
+    }
+
+    /**
+     * Invoked for each complete RTP packet (including header) on the publisher's audio RTP channel.
+     */
+    public void onPublisherAudioRtp(ByteBuf rtp) {
+        publisherSession.touch();
+        int rtpBytes = rtp.readableBytes();
+        audioInPackets.incrementAndGet();
+        audioInBytes.addAndGet(rtpBytes);
+        relayRtp(rtp, rtpBytes, 2, udpAudioSubscribers, false);
+        maybeLogStats();
+    }
+
+    private void relayRtp(
+            ByteBuf rtp,
+            int rtpBytes,
+            int interleavedChannel,
+            List<InetSocketAddress> udpSubscribers,
+            boolean video) {
         List<Channel> snapshot = new ArrayList<Channel>(subscribers);
         for (Channel sub : snapshot) {
             if (!sub.isActive()) {
@@ -115,21 +156,30 @@ public final class PublishedStream {
                 continue;
             }
             ByteBuf dup = rtp.retainedDuplicate();
-            ByteBuf framed = RtspInterleavedWriter.frame(0, dup);
+            ByteBuf framed = RtspInterleavedWriter.frame(interleavedChannel, dup);
             sub.writeAndFlush(framed);
-            outTcpPackets.incrementAndGet();
-            outTcpBytes.addAndGet(rtpBytes);
+            if (video) {
+                videoOutTcpPackets.incrementAndGet();
+                videoOutTcpBytes.addAndGet(rtpBytes);
+            } else {
+                audioOutTcpPackets.incrementAndGet();
+                audioOutTcpBytes.addAndGet(rtpBytes);
+            }
         }
         RtpUdpMediaPlane plane = rtpUdpPlane;
         if (plane != null && !udpSubscribers.isEmpty()) {
             List<InetSocketAddress> udpSnap = new ArrayList<InetSocketAddress>(udpSubscribers);
             for (InetSocketAddress dst : udpSnap) {
                 plane.sendRtpTo(dst, rtp.retainedDuplicate());
-                outUdpPackets.incrementAndGet();
-                outUdpBytes.addAndGet(rtpBytes);
+                if (video) {
+                    videoOutUdpPackets.incrementAndGet();
+                    videoOutUdpBytes.addAndGet(rtpBytes);
+                } else {
+                    audioOutUdpPackets.incrementAndGet();
+                    audioOutUdpBytes.addAndGet(rtpBytes);
+                }
             }
         }
-        maybeLogStats();
     }
 
     private void maybeLogStats() {
@@ -137,18 +187,32 @@ public final class PublishedStream {
         if (now - statsLogAtMs < STATS_LOG_INTERVAL_MS) {
             return;
         }
+        if (subscribers.isEmpty() && udpVideoSubscribers.isEmpty() && udpAudioSubscribers.isEmpty()) {
+            statsLogAtMs = now;
+            return;
+        }
         statsLogAtMs = now;
         log.info(
-                "RTP relay stats stream={} in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=tcp:{} udp:{}",
+                "RTP relay stats stream={} "
+                        + "video(in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=udp:{}) "
+                        + "audio(in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=udp:{}) "
+                        + "subs=tcp:{}",
                 key.path(),
-                inPackets.get(),
-                inBytes.get(),
-                outTcpPackets.get(),
-                outTcpBytes.get(),
-                outUdpPackets.get(),
-                outUdpBytes.get(),
-                subscribers.size(),
-                udpSubscribers.size());
+                videoInPackets.get(),
+                videoInBytes.get(),
+                videoOutTcpPackets.get(),
+                videoOutTcpBytes.get(),
+                videoOutUdpPackets.get(),
+                videoOutUdpBytes.get(),
+                udpVideoSubscribers.size(),
+                audioInPackets.get(),
+                audioInBytes.get(),
+                audioOutTcpPackets.get(),
+                audioOutTcpBytes.get(),
+                audioOutUdpPackets.get(),
+                audioOutUdpBytes.get(),
+                udpAudioSubscribers.size(),
+                subscribers.size());
     }
 
     public void shutdown() {
@@ -157,6 +221,7 @@ public final class PublishedStream {
             ch.close();
         }
         subscribers.clear();
-        udpSubscribers.clear();
+        udpVideoSubscribers.clear();
+        udpAudioSubscribers.clear();
     }
 }

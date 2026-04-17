@@ -35,11 +35,12 @@ public final class MediaServerBootstrap implements AutoCloseable {
     private final StreamRegistry registry = new StreamRegistry();
     private final EventLoopGroup boss = new NioEventLoopGroup(1);
     private final EventLoopGroup worker = new NioEventLoopGroup();
-    private final RtpUdpMediaPlane rtpUdpPlane = new RtpUdpMediaPlane(worker);
+    private final RtpUdpMediaPlane rtpUdpPlane;
     private final List<Channel> channels = new ArrayList<>();
 
     public MediaServerBootstrap(MediaServerConfig config) {
         this.config = config;
+        this.rtpUdpPlane = new RtpUdpMediaPlane(worker, config.rtpPortMin(), config.rtpPortMax());
     }
 
     public StreamRegistry registry() {
@@ -65,6 +66,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
         Channel httpChannel = http.bind(config.httpPort()).sync().channel();
         channels.add(httpChannel);
         log.info("HTTP API listening on {}", httpChannel.localAddress());
+        log.info("RTP UDP port range {}-{}", config.rtpPortMin(), config.rtpPortMax());
 
         rtpUdpPlane.ensureEgressStarted();
 

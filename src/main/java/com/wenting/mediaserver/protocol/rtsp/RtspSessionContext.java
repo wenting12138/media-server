@@ -24,10 +24,12 @@ final class RtspSessionContext {
     private PublishedStream subscribedStream;
 
     private RtpTransportMode rtpTransportMode = RtpTransportMode.TCP_INTERLEAVED;
-    private RtpUdpMediaPlane.PublisherRtpReceiver publisherUdpReceiver;
+    private RtpUdpMediaPlane.PublisherRtpReceiver publisherVideoUdpReceiver;
+    private RtpUdpMediaPlane.PublisherRtpReceiver publisherAudioUdpReceiver;
     private final List<RtpUdpMediaPlane.PublisherRtpReceiver> publisherAuxUdpReceivers =
             new ArrayList<RtpUdpMediaPlane.PublisherRtpReceiver>();
-    private InetSocketAddress subscriberUdpRtpDest;
+    private InetSocketAddress subscriberVideoUdpRtpDest;
+    private InetSocketAddress subscriberAudioUdpRtpDest;
 
     StreamKey streamKey() {
         return streamKey;
@@ -106,12 +108,20 @@ final class RtspSessionContext {
         this.rtpTransportMode = rtpTransportMode;
     }
 
-    RtpUdpMediaPlane.PublisherRtpReceiver publisherUdpReceiver() {
-        return publisherUdpReceiver;
+    RtpUdpMediaPlane.PublisherRtpReceiver publisherVideoUdpReceiver() {
+        return publisherVideoUdpReceiver;
     }
 
-    void setPublisherUdpReceiver(RtpUdpMediaPlane.PublisherRtpReceiver publisherUdpReceiver) {
-        this.publisherUdpReceiver = publisherUdpReceiver;
+    void setPublisherVideoUdpReceiver(RtpUdpMediaPlane.PublisherRtpReceiver publisherVideoUdpReceiver) {
+        this.publisherVideoUdpReceiver = publisherVideoUdpReceiver;
+    }
+
+    RtpUdpMediaPlane.PublisherRtpReceiver publisherAudioUdpReceiver() {
+        return publisherAudioUdpReceiver;
+    }
+
+    void setPublisherAudioUdpReceiver(RtpUdpMediaPlane.PublisherRtpReceiver publisherAudioUdpReceiver) {
+        this.publisherAudioUdpReceiver = publisherAudioUdpReceiver;
     }
 
     void addPublisherAuxUdpReceiver(RtpUdpMediaPlane.PublisherRtpReceiver receiver) {
@@ -120,18 +130,30 @@ final class RtspSessionContext {
         }
     }
 
-    InetSocketAddress subscriberUdpRtpDest() {
-        return subscriberUdpRtpDest;
+    InetSocketAddress subscriberVideoUdpRtpDest() {
+        return subscriberVideoUdpRtpDest;
     }
 
-    void setSubscriberUdpRtpDest(InetSocketAddress subscriberUdpRtpDest) {
-        this.subscriberUdpRtpDest = subscriberUdpRtpDest;
+    void setSubscriberVideoUdpRtpDest(InetSocketAddress subscriberVideoUdpRtpDest) {
+        this.subscriberVideoUdpRtpDest = subscriberVideoUdpRtpDest;
+    }
+
+    InetSocketAddress subscriberAudioUdpRtpDest() {
+        return subscriberAudioUdpRtpDest;
+    }
+
+    void setSubscriberAudioUdpRtpDest(InetSocketAddress subscriberAudioUdpRtpDest) {
+        this.subscriberAudioUdpRtpDest = subscriberAudioUdpRtpDest;
     }
 
     void clear() {
-        if (publisherUdpReceiver != null) {
-            publisherUdpReceiver.close();
-            publisherUdpReceiver = null;
+        if (publisherVideoUdpReceiver != null) {
+            publisherVideoUdpReceiver.close();
+            publisherVideoUdpReceiver = null;
+        }
+        if (publisherAudioUdpReceiver != null) {
+            publisherAudioUdpReceiver.close();
+            publisherAudioUdpReceiver = null;
         }
         for (RtpUdpMediaPlane.PublisherRtpReceiver aux : publisherAuxUdpReceivers) {
             if (aux != null) {
@@ -149,6 +171,7 @@ final class RtspSessionContext {
         this.publishedStream = null;
         this.subscribedStream = null;
         this.rtpTransportMode = RtpTransportMode.TCP_INTERLEAVED;
-        this.subscriberUdpRtpDest = null;
+        this.subscriberVideoUdpRtpDest = null;
+        this.subscriberAudioUdpRtpDest = null;
     }
 }
