@@ -1,1 +1,3 @@
 com\wenting\mediaserver\core\registry\StreamRegistryTest.class
+com\wenting\mediaserver\protocol\rtp\H264RtpDepacketizerTest.class
+com\wenting\mediaserver\protocol\rtsp\RtspTcpFramingDecoderTest.class

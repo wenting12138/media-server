@@ -3,11 +3,10 @@ package com.wenting.mediaserver.protocol.rtsp;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.socket.SocketChannel;
-import io.netty.handler.codec.rtsp.RtspDecoder;
 import io.netty.handler.codec.rtsp.RtspEncoder;
 
 /**
- * RTSP pipeline placeholder. Next steps: custom decoder for interleaved RTP, session FSM, SDP exchange.
+ * RTSP over TCP: framing decoder, response encoder, session handler (push/pull + RTP relay + H264 depacketize).
  */
 public final class RtspChannelInitializer extends ChannelInitializer<SocketChannel> {
 
@@ -19,8 +18,8 @@ public final class RtspChannelInitializer extends ChannelInitializer<SocketChann
 
     @Override
     protected void initChannel(SocketChannel ch) {
-        ch.pipeline().addLast(new RtspDecoder());
+        ch.pipeline().addLast(new RtspTcpFramingDecoder());
         ch.pipeline().addLast(new RtspEncoder());
-        ch.pipeline().addLast(new RtspStubHandler(registry));
+        ch.pipeline().addLast(new RtspConnectionHandler(registry));
     }
 }

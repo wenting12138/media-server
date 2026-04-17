@@ -14,15 +14,20 @@ public final class MediaSession {
         SUBSCRIBER
     }
 
-    private final String id = UUID.randomUUID().toString();
+    private final String id;
     private final StreamKey streamKey;
     private final Role role;
     private final Instant createdAt = Instant.now();
     private final AtomicReference<Instant> lastActiveAt = new AtomicReference<>(createdAt);
 
-    public MediaSession(StreamKey streamKey, Role role) {
+    public MediaSession(StreamKey streamKey, String sessionId, Role role) {
         this.streamKey = streamKey;
         this.role = role;
+        if (sessionId != null) {
+            this.id = sessionId;
+        }else {
+            this.id = UUID.randomUUID().toString();
+        }
     }
 
     public String id() {

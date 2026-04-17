@@ -6,7 +6,7 @@
 
     <groupId>com.wenting</groupId>
     <artifactId>media-server</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.1</version>
     <name>media-server</name>
     <description>Netty-based streaming media server (ZLMediaKit-style architecture)</description>
 

@@ -1,7 +1,9 @@
 package com.wenting.mediaserver.core.registry;
 
 import com.wenting.mediaserver.core.model.MediaSession;
+import com.wenting.mediaserver.core.model.MediaSession;
 import com.wenting.mediaserver.core.model.StreamKey;
+import com.wenting.mediaserver.core.publish.PublishedStream;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -10,42 +12,53 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * In-memory index of active streams and sessions. Replace with clustered store when scaling out.
+ * In-memory published streams index. One live publisher per {@link StreamKey}.
  */
 public final class StreamRegistry {
 
-    private final Map<StreamKey, MediaSession> publishers = new ConcurrentHashMap<>();
-    private final Map<String, MediaSession> sessionsById = new ConcurrentHashMap<>();
+    private final Map<StreamKey, PublishedStream> published = new ConcurrentHashMap<StreamKey, PublishedStream>();
 
-    public Optional<MediaSession> publisherOf(StreamKey key) {
-        return Optional.ofNullable(publishers.get(key));
-    }
-
-    public MediaSession registerPublisher(StreamKey key) {
-        MediaSession session = new MediaSession(key, MediaSession.Role.PUBLISHER);
-        MediaSession previous = publishers.putIfAbsent(key, session);
-        if (previous != null) {
-            return previous;
+    /**
+     * @return empty if another publisher already holds the key
+     */
+    public Optional<PublishedStream> tryPublish(StreamKey key, String sessionId, String sdp, io.netty.channel.Channel publisherChannel) {
+        MediaSession session = new MediaSession(key, sessionId, MediaSession.Role.PUBLISHER);
+        PublishedStream stream = new PublishedStream(key, session);
+        stream.setSdp(sdp);
+        stream.setPublisherChannel(publisherChannel);
+        PublishedStream prev = published.putIfAbsent(key, stream);
+        if (prev != null) {
+            return Optional.empty();
         }
-        sessionsById.put(session.id(), session);
-        return session;
+        return Optional.of(stream);
     }
 
-    public void unregisterPublisher(StreamKey key, String sessionId) {
-        publishers.compute(key, (k, current) -> {
-            if (current != null && current.id().equals(sessionId)) {
-                sessionsById.remove(sessionId);
+    public void unpublish(StreamKey key, String publisherSessionId) {
+        published.compute(key, (k, current) -> {
+            if (current == null) {
+                return null;
+            }
+            if (current.publisherSession().id().equals(publisherSessionId)) {
+                current.shutdown();
                 return null;
             }
             return current;
         });
     }
 
+    public Optional<PublishedStream> published(StreamKey key) {
+        return Optional.ofNullable(published.get(key));
+    }
+
     public List<StreamKey> listPublishedKeys() {
-        return new ArrayList<>(publishers.keySet());
+        return new ArrayList<StreamKey>(published.keySet());
     }
 
     public int publisherCount() {
-        return publishers.size();
+        return published.size();
+    }
+
+    public Optional<MediaSession> publisherOf(StreamKey key) {
+        return published(key).map(PublishedStream::publisherSession);
     }
 }
