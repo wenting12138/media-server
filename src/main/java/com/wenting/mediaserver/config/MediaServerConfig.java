@@ -7,17 +7,20 @@ public final class MediaServerConfig {
 
     private static final int DEFAULT_HTTP = 18080;
     private static final int DEFAULT_RTSP = 1554;
+    private static final int DEFAULT_RTMP = 2935;
     private static final int DEFAULT_RTP_PORT_MIN = 20000;
     private static final int DEFAULT_RTP_PORT_MAX = 30000;
 
     private final int httpPort;
     private final int rtspPort;
+    private final int rtmpPort;
     private final int rtpPortMin;
     private final int rtpPortMax;
 
-    public MediaServerConfig(int httpPort, int rtspPort, int rtpPortMin, int rtpPortMax) {
+    public MediaServerConfig(int httpPort, int rtspPort, int rtmpPort, int rtpPortMin, int rtpPortMax) {
         this.httpPort = httpPort;
         this.rtspPort = rtspPort;
+        this.rtmpPort = rtmpPort;
         this.rtpPortMin = rtpPortMin;
         this.rtpPortMax = rtpPortMax;
     }
@@ -25,6 +28,7 @@ public final class MediaServerConfig {
     public static MediaServerConfig fromEnvironment() {
         int http = parsePort(System.getenv("MEDIA_HTTP_PORT"), DEFAULT_HTTP);
         int rtsp = parsePort(System.getenv("MEDIA_RTSP_PORT"), DEFAULT_RTSP);
+        int rtmp = parsePort(System.getenv("MEDIA_RTMP_PORT"), DEFAULT_RTMP);
         int rtpMin = parsePort(System.getenv("MEDIA_RTP_PORT_MIN"), DEFAULT_RTP_PORT_MIN);
         int rtpMax = parsePort(System.getenv("MEDIA_RTP_PORT_MAX"), DEFAULT_RTP_PORT_MAX);
         if (rtpMin > rtpMax) {
@@ -36,7 +40,7 @@ public final class MediaServerConfig {
             rtpMin = DEFAULT_RTP_PORT_MIN;
             rtpMax = DEFAULT_RTP_PORT_MAX;
         }
-        return new MediaServerConfig(http, rtsp, rtpMin, rtpMax);
+        return new MediaServerConfig(http, rtsp, rtmp, rtpMin, rtpMax);
     }
 
     private static int parsePort(String raw, int fallback) {
@@ -60,6 +64,10 @@ public final class MediaServerConfig {
 
     public int rtspPort() {
         return rtspPort;
+    }
+
+    public int rtmpPort() {
+        return rtmpPort;
     }
 
     public int rtpPortMin() {

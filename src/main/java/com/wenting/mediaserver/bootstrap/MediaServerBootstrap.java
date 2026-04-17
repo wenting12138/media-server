@@ -4,6 +4,7 @@ import com.wenting.mediaserver.api.HttpJsonApiHandler;
 import com.wenting.mediaserver.config.MediaServerConfig;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
+import com.wenting.mediaserver.protocol.rtmp.RtmpChannelInitializer;
 import com.wenting.mediaserver.protocol.rtsp.RtspChannelInitializer;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -78,6 +79,14 @@ public final class MediaServerBootstrap implements AutoCloseable {
         Channel rtspChannel = rtsp.bind(config.rtspPort()).sync().channel();
         channels.add(rtspChannel);
         log.info("RTSP (TCP signaling + RTP TCP/UDP) listening on {}", rtspChannel.localAddress());
+
+        ServerBootstrap rtmp = new ServerBootstrap();
+        rtmp.group(boss, worker)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new RtmpChannelInitializer(registry));
+        Channel rtmpChannel = rtmp.bind(config.rtmpPort()).sync().channel();
+        channels.add(rtmpChannel);
+        log.info("RTMP listening on {}", rtmpChannel.localAddress());
 
         return httpChannel.closeFuture();
     }

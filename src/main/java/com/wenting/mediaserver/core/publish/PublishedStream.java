@@ -4,9 +4,11 @@ import com.wenting.mediaserver.core.model.MediaSession;
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.protocol.rtp.H264RtpDepacketizer;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
+import com.wenting.mediaserver.protocol.rtmp.RtmpWriter;
 import com.wenting.mediaserver.protocol.rtsp.RtspInterleavedWriter;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,7 +34,10 @@ public final class PublishedStream {
     private final CopyOnWriteArrayList<Channel> subscribers = new CopyOnWriteArrayList<Channel>();
     private final CopyOnWriteArrayList<InetSocketAddress> udpVideoSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
     private final CopyOnWriteArrayList<InetSocketAddress> udpAudioSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
+    private final CopyOnWriteArrayList<ChannelHandlerContext> rtmpSubscribers = new CopyOnWriteArrayList<ChannelHandlerContext>();
     private volatile RtpUdpMediaPlane rtpUdpPlane;
+    private volatile ByteBuf rtmpVideoSeqHeader;
+    private volatile ByteBuf rtmpAudioSeqHeader;
     private final H264RtpDepacketizer h264 = new H264RtpDepacketizer();
     private final AtomicLong videoInPackets = new AtomicLong();
     private final AtomicLong videoInBytes = new AtomicLong();
@@ -79,6 +84,27 @@ public final class PublishedStream {
 
     public void removeSubscriber(Channel ch) {
         subscribers.remove(ch);
+    }
+
+    public void addRtmpSubscriber(ChannelHandlerContext ctx, int messageStreamId) {
+        if (ctx == null) {
+            return;
+        }
+        rtmpSubscribers.addIfAbsent(ctx);
+        ByteBuf vsh = rtmpVideoSeqHeader;
+        if (vsh != null && vsh.isReadable()) {
+            RtmpWriter.writeMedia(ctx, 6, 9, messageStreamId, 0, vsh.retainedDuplicate());
+        }
+        ByteBuf ash = rtmpAudioSeqHeader;
+        if (ash != null && ash.isReadable()) {
+            RtmpWriter.writeMedia(ctx, 4, 8, messageStreamId, 0, ash.retainedDuplicate());
+        }
+    }
+
+    public void removeRtmpSubscriber(ChannelHandlerContext ctx) {
+        if (ctx != null) {
+            rtmpSubscribers.remove(ctx);
+        }
     }
 
     public void attachRtpUdpMediaPlane(RtpUdpMediaPlane plane) {
@@ -141,6 +167,68 @@ public final class PublishedStream {
         audioInBytes.addAndGet(rtpBytes);
         relayRtp(rtp, rtpBytes, 2, udpAudioSubscribers, false);
         maybeLogStats();
+    }
+
+    public void onPublisherRtmpVideo(ByteBuf payload, int timestamp, int messageStreamId) {
+        publisherSession.touch();
+        int bytes = payload.readableBytes();
+        videoInPackets.incrementAndGet();
+        videoInBytes.addAndGet(bytes);
+        cacheRtmpSeqHeader(payload, true);
+        relayRtmpToSubscribers(9, payload, timestamp, messageStreamId);
+        maybeLogStats();
+    }
+
+    public void onPublisherRtmpAudio(ByteBuf payload, int timestamp, int messageStreamId) {
+        publisherSession.touch();
+        int bytes = payload.readableBytes();
+        audioInPackets.incrementAndGet();
+        audioInBytes.addAndGet(bytes);
+        cacheRtmpSeqHeader(payload, false);
+        relayRtmpToSubscribers(8, payload, timestamp, messageStreamId);
+        maybeLogStats();
+    }
+
+    private void cacheRtmpSeqHeader(ByteBuf payload, boolean video) {
+        if (!payload.isReadable()) {
+            return;
+        }
+        if (video) {
+            if (payload.readableBytes() >= 2) {
+                int avcPacketType = payload.getUnsignedByte(payload.readerIndex() + 1);
+                if (avcPacketType == 0) {
+                    ReferenceCountUtil.safeRelease(rtmpVideoSeqHeader);
+                    rtmpVideoSeqHeader = payload.retainedDuplicate();
+                }
+            }
+            return;
+        }
+        if (payload.readableBytes() >= 2) {
+            int soundFormat = (payload.getUnsignedByte(payload.readerIndex()) >> 4) & 0x0F;
+            int aacPacketType = payload.getUnsignedByte(payload.readerIndex() + 1);
+            if (soundFormat == 10 && aacPacketType == 0) {
+                ReferenceCountUtil.safeRelease(rtmpAudioSeqHeader);
+                rtmpAudioSeqHeader = payload.retainedDuplicate();
+            }
+        }
+    }
+
+    private void relayRtmpToSubscribers(int typeId, ByteBuf payload, int timestamp, int messageStreamId) {
+        List<ChannelHandlerContext> snapshot = new ArrayList<ChannelHandlerContext>(rtmpSubscribers);
+        for (ChannelHandlerContext sub : snapshot) {
+            if (sub == null || !sub.channel().isActive()) {
+                rtmpSubscribers.remove(sub);
+                continue;
+            }
+            RtmpWriter.writeMedia(sub, typeId == 9 ? 6 : 4, typeId, messageStreamId, timestamp, payload.retainedDuplicate());
+            if (typeId == 9) {
+                videoOutTcpPackets.incrementAndGet();
+                videoOutTcpBytes.addAndGet(payload.readableBytes());
+            } else {
+                audioOutTcpPackets.incrementAndGet();
+                audioOutTcpBytes.addAndGet(payload.readableBytes());
+            }
+        }
     }
 
     private void relayRtp(
@@ -221,7 +309,12 @@ public final class PublishedStream {
             ch.close();
         }
         subscribers.clear();
+        rtmpSubscribers.clear();
         udpVideoSubscribers.clear();
         udpAudioSubscribers.clear();
+        ReferenceCountUtil.safeRelease(rtmpVideoSeqHeader);
+        ReferenceCountUtil.safeRelease(rtmpAudioSeqHeader);
+        rtmpVideoSeqHeader = null;
+        rtmpAudioSeqHeader = null;
     }
 }
