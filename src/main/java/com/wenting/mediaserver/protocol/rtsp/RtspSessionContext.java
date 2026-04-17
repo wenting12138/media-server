@@ -2,6 +2,11 @@ package com.wenting.mediaserver.protocol.rtsp;
 
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.core.publish.PublishedStream;
+import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
+
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Mutable per-connection RTSP session fields manipulated by {@link RtspStateMachine}.
@@ -17,6 +22,12 @@ final class RtspSessionContext {
     private int setupRound;
     private PublishedStream publishedStream;
     private PublishedStream subscribedStream;
+
+    private RtpTransportMode rtpTransportMode = RtpTransportMode.TCP_INTERLEAVED;
+    private RtpUdpMediaPlane.PublisherRtpReceiver publisherUdpReceiver;
+    private final List<RtpUdpMediaPlane.PublisherRtpReceiver> publisherAuxUdpReceivers =
+            new ArrayList<RtpUdpMediaPlane.PublisherRtpReceiver>();
+    private InetSocketAddress subscriberUdpRtpDest;
 
     StreamKey streamKey() {
         return streamKey;
@@ -87,7 +98,47 @@ final class RtspSessionContext {
         this.subscribedStream = subscribedStream;
     }
 
+    RtpTransportMode rtpTransportMode() {
+        return rtpTransportMode;
+    }
+
+    void setRtpTransportMode(RtpTransportMode rtpTransportMode) {
+        this.rtpTransportMode = rtpTransportMode;
+    }
+
+    RtpUdpMediaPlane.PublisherRtpReceiver publisherUdpReceiver() {
+        return publisherUdpReceiver;
+    }
+
+    void setPublisherUdpReceiver(RtpUdpMediaPlane.PublisherRtpReceiver publisherUdpReceiver) {
+        this.publisherUdpReceiver = publisherUdpReceiver;
+    }
+
+    void addPublisherAuxUdpReceiver(RtpUdpMediaPlane.PublisherRtpReceiver receiver) {
+        if (receiver != null) {
+            publisherAuxUdpReceivers.add(receiver);
+        }
+    }
+
+    InetSocketAddress subscriberUdpRtpDest() {
+        return subscriberUdpRtpDest;
+    }
+
+    void setSubscriberUdpRtpDest(InetSocketAddress subscriberUdpRtpDest) {
+        this.subscriberUdpRtpDest = subscriberUdpRtpDest;
+    }
+
     void clear() {
+        if (publisherUdpReceiver != null) {
+            publisherUdpReceiver.close();
+            publisherUdpReceiver = null;
+        }
+        for (RtpUdpMediaPlane.PublisherRtpReceiver aux : publisherAuxUdpReceivers) {
+            if (aux != null) {
+                aux.close();
+            }
+        }
+        publisherAuxUdpReceivers.clear();
         this.streamKey = null;
         this.sdpText = null;
         this.rtspSessionId = null;
@@ -97,5 +148,7 @@ final class RtspSessionContext {
         this.setupRound = 0;
         this.publishedStream = null;
         this.subscribedStream = null;
+        this.rtpTransportMode = RtpTransportMode.TCP_INTERLEAVED;
+        this.subscriberUdpRtpDest = null;
     }
 }

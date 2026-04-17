@@ -70,6 +70,25 @@ public final class RtspResponses {
         return r;
     }
 
+    public static FullHttpResponse setupUdp(
+            int cseq,
+            String sessionId,
+            int serverRtp,
+            int serverRtcp,
+            int clientRtp,
+            int clientRtcp) {
+        DefaultFullHttpResponse resp = new DefaultFullHttpResponse(
+                RtspVersions.RTSP_1_0,
+                HttpResponseStatus.OK,
+                Unpooled.EMPTY_BUFFER);
+        withCseq(resp, cseq);
+        resp.headers().set(RtspHeaderNames.SESSION, sessionId + ";timeout=60");
+        resp.headers().set(RtspHeaderNames.TRANSPORT,
+                "RTP/AVP;unicast;client_port=" + clientRtp + "-" + clientRtcp
+                        + ";server_port=" + serverRtp + "-" + serverRtcp);
+        return resp;
+    }
+
     public static FullHttpResponse error(int cseq, HttpResponseStatus status) {
         DefaultFullHttpResponse r = new DefaultFullHttpResponse(
                 RtspVersions.RTSP_1_0,

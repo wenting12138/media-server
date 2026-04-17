@@ -3,6 +3,7 @@ package com.wenting.mediaserver.protocol.rtsp;
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.core.publish.PublishedStream;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
+import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import com.wenting.mediaserver.protocol.rtsp.sdp.SdpParser;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
@@ -11,6 +12,7 @@ import io.netty.util.CharsetUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.InetSocketAddress;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -32,11 +34,13 @@ final class RtspStateMachine {
             new HttpResponseStatus(454, "Session Not Found");
 
     private final StreamRegistry registry;
+    private final RtpUdpMediaPlane rtpUdp;
     private final RtspSessionContext session = new RtspSessionContext();
     private RtspFsmState state = RtspFsmState.IDLE;
 
-    RtspStateMachine(StreamRegistry registry) {
+    RtspStateMachine(StreamRegistry registry, RtpUdpMediaPlane rtpUdp) {
         this.registry = registry;
+        this.rtpUdp = rtpUdp;
     }
 
     RtspFsmState rtspState() {
@@ -64,6 +68,9 @@ final class RtspStateMachine {
                         "RTSP subscriber TCP closed -> stop pull {} remote={}",
                         session.streamKey() != null ? session.streamKey().path() : "(unknown)",
                         ch.remoteAddress());
+                if (session.subscriberUdpRtpDest() != null) {
+                    session.subscribedStream().removeUdpSubscriber(session.subscriberUdpRtpDest());
+                }
                 session.subscribedStream().removeSubscriber(ch);
             } else if (state.isSubscriberSide()) {
                 log.info(
@@ -84,7 +91,7 @@ final class RtspStateMachine {
             ctx.writeAndFlush(RtspResponses.error(-1, HttpResponseStatus.BAD_REQUEST));
             return;
         }
-        log.info("RTSP MESSAGE {}", req.toString());
+//        log.info("RTSP MESSAGE {}", req.toString());
         if ("OPTIONS".equals(method)) {
             ctx.writeAndFlush(RtspResponses.options(cseq));
         } else if ("ANNOUNCE".equals(method)) {
@@ -111,6 +118,9 @@ final class RtspStateMachine {
     }
 
     void handleInterleaved(ChannelHandlerContext ctx, InterleavedRtpPacket p) {
+        if (session.rtpTransportMode() != RtpTransportMode.TCP_INTERLEAVED) {
+            return;
+        }
         if (state != RtspFsmState.PUBLISHER_LIVE || session.publishedStream() == null) {
             return;
         }
@@ -192,21 +202,137 @@ final class RtspStateMachine {
             return;
         }
         String transport = req.header("Transport");
-        if (!RtspTransport.isTcpTransport(transport)) {
+        boolean tcp = RtspTransport.isTcpTransport(transport);
+        boolean udp = RtspTransport.isUdpTransport(transport);
+        if (!tcp && !udp) {
             ctx.writeAndFlush(RtspResponses.error(cseq, UNSUPPORTED_MEDIA));
             return;
         }
-        log.info("RTSP SETUP {} transport={}", session.streamKey().path(), transport);
-        int[] ch = RtspTransport.parseInterleavedPairs(transport);
         if (session.rtspSessionId() == null) {
             session.setRtspSessionId(Long.toHexString(System.nanoTime())
                     + UUID.randomUUID().toString().replace("-", ""));
         }
-        if (state == RtspFsmState.PUBLISHER_NEGOTIATING && session.setupRound() == 0) {
-            session.setVideoInterleaved(ch[0], ch[1]);
+        if (tcp) {
+            session.setRtpTransportMode(RtpTransportMode.TCP_INTERLEAVED);
+            int[] ch = RtspTransport.parseInterleavedPairs(transport);
+            log.info("RTSP SETUP {} transport={}", session.streamKey().path(), transport);
+            if (state == RtspFsmState.PUBLISHER_NEGOTIATING && session.setupRound() == 0) {
+                session.setVideoInterleaved(ch[0], ch[1]);
+            }
+            session.incrementSetupRound();
+            ctx.writeAndFlush(RtspResponses.setupTcp(cseq, session.rtspSessionId(), ch[0], ch[1]));
+            return;
         }
-        session.incrementSetupRound();
-        ctx.writeAndFlush(RtspResponses.setupTcp(cseq, session.rtspSessionId(), ch[0], ch[1]));
+        session.setRtpTransportMode(RtpTransportMode.UDP);
+        int[] clientPorts = RtspTransport.parseClientPorts(transport);
+        if (clientPorts[0] <= 0 || clientPorts[1] <= 0) {
+            ctx.writeAndFlush(RtspResponses.error(cseq, UNSUPPORTED_MEDIA));
+            return;
+        }
+        log.info("RTSP SETUP {} transport={}", session.streamKey().path(), transport);
+        if (state.isPublisherSide()) {
+            int trackId = RtspPathUtil.streamTrackIdFromRtspUri(req.uri()).orElse(0);
+            RtpUdpMediaPlane.PublisherRtpReceiver recv = session.publisherUdpReceiver();
+            if (trackId == 0) {
+                if (recv != null) {
+                    recv.close();
+                    session.setPublisherUdpReceiver(null);
+                }
+                try {
+                    recv = rtpUdp.openPublisherReceiver();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.INTERNAL_SERVER_ERROR));
+                    return;
+                } catch (Exception e) {
+                    log.warn("RTSP publisher UDP bind failed", e);
+                    ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.INTERNAL_SERVER_ERROR));
+                    return;
+                }
+                session.setPublisherUdpReceiver(recv);
+                log.info(
+                        "RTSP publisher UDP video recv server_port={}-{} (streamid={})",
+                        recv.serverRtpPort(),
+                        recv.serverRtcpPort(),
+                        trackId);
+            } else {
+                if (recv == null) {
+                    log.warn(
+                            "RTSP publisher UDP SETUP streamid={} before video track; reject with unsupported media",
+                            trackId);
+                    ctx.writeAndFlush(RtspResponses.error(cseq, UNSUPPORTED_MEDIA));
+                    return;
+                }
+                RtpUdpMediaPlane.PublisherRtpReceiver auxRecv;
+                try {
+                    auxRecv = rtpUdp.openPublisherReceiver();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.INTERNAL_SERVER_ERROR));
+                    return;
+                } catch (Exception e) {
+                    log.warn("RTSP publisher UDP bind failed for non-video track streamid={}", trackId, e);
+                    ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.INTERNAL_SERVER_ERROR));
+                    return;
+                }
+                session.addPublisherAuxUdpReceiver(auxRecv);
+                log.info(
+                        "RTSP publisher UDP SETUP non-video track streamid={} -> discard server_port={}-{} (video keeps {}-{})",
+                        trackId,
+                        auxRecv.serverRtpPort(),
+                        auxRecv.serverRtcpPort(),
+                        recv.serverRtpPort(),
+                        recv.serverRtcpPort());
+                recv = auxRecv;
+            }
+            session.incrementSetupRound();
+            ctx.writeAndFlush(RtspResponses.setupUdp(
+                    cseq,
+                    session.rtspSessionId(),
+                    recv.serverRtpPort(),
+                    recv.serverRtcpPort(),
+                    clientPorts[0],
+                    clientPorts[1]));
+            return;
+        }
+        if (state.isSubscriberSide()) {
+            try {
+                rtpUdp.ensureEgressStarted();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.INTERNAL_SERVER_ERROR));
+                return;
+            }
+            int sRtp = rtpUdp.egressServerRtpPort();
+            int sRtcp = rtpUdp.egressServerRtcpPort();
+            if (sRtp <= 0 || sRtcp <= 0) {
+                ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.INTERNAL_SERVER_ERROR));
+                return;
+            }
+            InetSocketAddress rtspRemote = (InetSocketAddress) ctx.channel().remoteAddress();
+            // FFmpeg/Lavf SETUP twice: streamid=0 (video) then streamid=1 (audio). Only video RTP is relayed;
+            // must not overwrite the video UDP destination with the second track's client_port.
+            int trackId = RtspPathUtil.streamTrackIdFromRtspUri(req.uri()).orElse(0);
+            if (trackId == 0) {
+                session.setSubscriberUdpRtpDest(new InetSocketAddress(rtspRemote.getAddress(), clientPorts[0]));
+                log.info(
+                        "RTSP subscriber UDP video dest {} (streamid={})",
+                        session.subscriberUdpRtpDest(),
+                        trackId);
+            } else {
+                log.info("RTSP subscriber UDP SETUP ignored for non-video track streamid={} (no H264 relay)", trackId);
+            }
+            session.incrementSetupRound();
+            ctx.writeAndFlush(RtspResponses.setupUdp(
+                    cseq,
+                    session.rtspSessionId(),
+                    sRtp,
+                    sRtcp,
+                    clientPorts[0],
+                    clientPorts[1]));
+            return;
+        }
+        ctx.writeAndFlush(RtspResponses.error(cseq, WRONG_STATE));
     }
 
     private void onRecord(ChannelHandlerContext ctx, RtspRequestMessage req, int cseq) {
@@ -225,8 +351,13 @@ final class RtspStateMachine {
             ctx.writeAndFlush(RtspResponses.error(cseq, STREAM_IN_USE));
             return;
         }
-        session.setPublishedStream(publishResult.get());
-        session.setPublisherMediaSessionId(session.publishedStream().publisherSession().id());
+        PublishedStream ps = publishResult.get();
+        session.setPublishedStream(ps);
+        session.setPublisherMediaSessionId(ps.publisherSession().id());
+        ps.attachRtpUdpMediaPlane(rtpUdp);
+        if (session.publisherUdpReceiver() != null) {
+            session.publisherUdpReceiver().bindSink(ps);
+        }
         state = RtspFsmState.PUBLISHER_LIVE;
         log.info("RTSP RECORD {} session={}", session.streamKey().path(), session.publisherMediaSessionId());
         ctx.writeAndFlush(RtspResponses.okEmpty(cseq));
@@ -238,6 +369,11 @@ final class RtspStateMachine {
             return;
         }
         if (!sessionMatches(req)) {
+            log.warn(
+                    "RTSP PLAY session mismatch cseq={} header={} expected={}",
+                    cseq,
+                    req.header("Session"),
+                    session.rtspSessionId());
             ctx.writeAndFlush(RtspResponses.error(cseq, SESSION_NOT_FOUND));
             return;
         }
@@ -246,8 +382,21 @@ final class RtspStateMachine {
             ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.NOT_FOUND));
             return;
         }
-        session.setSubscribedStream(ps.get());
-        session.subscribedStream().addSubscriber(ctx.channel());
+        PublishedStream stream = ps.get();
+        session.setSubscribedStream(stream);
+        stream.attachRtpUdpMediaPlane(rtpUdp);
+        if (session.rtpTransportMode() == RtpTransportMode.TCP_INTERLEAVED) {
+            stream.addSubscriber(ctx.channel());
+        }
+        if (session.rtpTransportMode() == RtpTransportMode.UDP) {
+            if (session.subscriberUdpRtpDest() != null) {
+                stream.addUdpSubscriber(session.subscriberUdpRtpDest());
+            } else {
+                log.warn(
+                        "RTSP PLAY UDP but no video track destination (missing SETUP for streamid=0 / base URI?) {}",
+                        session.streamKey().path());
+            }
+        }
         state = RtspFsmState.SUBSCRIBER_LIVE;
         log.info("RTSP PLAY {}", session.streamKey().path());
         ctx.writeAndFlush(RtspResponses.okEmpty(cseq));
@@ -270,7 +419,13 @@ final class RtspStateMachine {
             registry.unpublish(session.streamKey(), session.publisherMediaSessionId());
         }
         if (stopPull) {
-            session.subscribedStream().removeSubscriber(ctx.channel());
+            PublishedStream ss = session.subscribedStream();
+            if (ss != null) {
+                if (session.subscriberUdpRtpDest() != null) {
+                    ss.removeUdpSubscriber(session.subscriberUdpRtpDest());
+                }
+                ss.removeSubscriber(ctx.channel());
+            }
         }
         session.clear();
         state = RtspFsmState.IDLE;

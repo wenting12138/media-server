@@ -3,6 +3,7 @@ package com.wenting.mediaserver.bootstrap;
 import com.wenting.mediaserver.api.HttpJsonApiHandler;
 import com.wenting.mediaserver.config.MediaServerConfig;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
+import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import com.wenting.mediaserver.protocol.rtsp.RtspChannelInitializer;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -34,6 +35,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
     private final StreamRegistry registry = new StreamRegistry();
     private final EventLoopGroup boss = new NioEventLoopGroup(1);
     private final EventLoopGroup worker = new NioEventLoopGroup();
+    private final RtpUdpMediaPlane rtpUdpPlane = new RtpUdpMediaPlane(worker);
     private final List<Channel> channels = new ArrayList<>();
 
     public MediaServerBootstrap(MediaServerConfig config) {
@@ -64,14 +66,16 @@ public final class MediaServerBootstrap implements AutoCloseable {
         channels.add(httpChannel);
         log.info("HTTP API listening on {}", httpChannel.localAddress());
 
+        rtpUdpPlane.ensureEgressStarted();
+
         ServerBootstrap rtsp = new ServerBootstrap();
         rtsp.group(boss, worker)
                 .channel(NioServerSocketChannel.class)
-                .childHandler(new RtspChannelInitializer(registry));
+                .childHandler(new RtspChannelInitializer(registry, rtpUdpPlane));
 
         Channel rtspChannel = rtsp.bind(config.rtspPort()).sync().channel();
         channels.add(rtspChannel);
-        log.info("RTSP (stub) listening on {}", rtspChannel.localAddress());
+        log.info("RTSP (TCP signaling + RTP TCP/UDP) listening on {}", rtspChannel.localAddress());
 
         return httpChannel.closeFuture();
     }
@@ -81,6 +85,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
         for (Channel ch : channels) {
             ch.close();
         }
+        rtpUdpPlane.close();
         worker.shutdownGracefully();
         boss.shutdownGracefully();
     }

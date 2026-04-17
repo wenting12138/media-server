@@ -1,6 +1,7 @@
 package com.wenting.mediaserver.protocol.rtsp;
 
 import com.wenting.mediaserver.core.registry.StreamRegistry;
+import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -16,8 +17,8 @@ public final class RtspConnectionHandler extends SimpleChannelInboundHandler<Obj
 
     private final RtspStateMachine fsm;
 
-    public RtspConnectionHandler(StreamRegistry registry) {
-        this.fsm = new RtspStateMachine(registry);
+    public RtspConnectionHandler(StreamRegistry registry, RtpUdpMediaPlane rtpUdp) {
+        this.fsm = new RtspStateMachine(registry, rtpUdp);
     }
 
     /** 推流 / 拉流 / 未定：由状态机当前状态推导（等价于早期的 {@code Side}）。 */

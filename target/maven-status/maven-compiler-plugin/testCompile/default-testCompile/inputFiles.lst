@@ -1,3 +1,5 @@
 D:\workspace\github\wenting\media-server\src\test\java\com\wenting\mediaserver\core\registry\StreamRegistryTest.java
 D:\workspace\github\wenting\media-server\src\test\java\com\wenting\mediaserver\protocol\rtp\H264RtpDepacketizerTest.java
+D:\workspace\github\wenting\media-server\src\test\java\com\wenting\mediaserver\protocol\rtsp\RtspPathUtilTest.java
 D:\workspace\github\wenting\media-server\src\test\java\com\wenting\mediaserver\protocol\rtsp\RtspTcpFramingDecoderTest.java
+D:\workspace\github\wenting\media-server\src\test\java\com\wenting\mediaserver\protocol\rtsp\RtspTransportTest.java
