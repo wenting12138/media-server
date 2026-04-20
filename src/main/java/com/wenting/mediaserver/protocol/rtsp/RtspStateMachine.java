@@ -96,6 +96,7 @@ final class RtspStateMachine {
         }
 //        log.info("RTSP MESSAGE {}", req.toString());
         if ("OPTIONS".equals(method)) {
+            log.info("RTSP OPTIONS {}, {}", req.uri(), req.toString());
             ctx.writeAndFlush(RtspResponses.options(cseq));
         } else if ("ANNOUNCE".equals(method)) {
             onAnnounce(ctx, req, cseq);
@@ -164,10 +165,10 @@ final class RtspStateMachine {
             ctx.writeAndFlush(RtspResponses.error(cseq, UNSUPPORTED_MEDIA));
             return;
         }
-        log.info("RTSP ANNOUNCE {}", key.path());
         session.setStreamKey(key);
         session.setSdpText(req.body().toString(CharsetUtil.UTF_8));
         state = RtspFsmState.PUBLISHER_NEGOTIATING;
+        log.info("RTSP ANNOUNCE {}, sdp=\r\n{}", key.path(), session.sdpText());
         ctx.writeAndFlush(RtspResponses.announceOk(cseq));
     }
 
