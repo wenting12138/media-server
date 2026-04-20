@@ -193,7 +193,7 @@ final class RtspStateMachine {
             ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.NOT_FOUND));
             return;
         }
-        log.info("RTSP DESCRIBE {}", key.path());
+        log.info("RTSP DESCRIBE {}, sdp=\r\n{}", key.path(), sdp);
         session.setStreamKey(key);
         if (state == RtspFsmState.IDLE) {
             state = RtspFsmState.SUBSCRIBER_NEGOTIATING;
