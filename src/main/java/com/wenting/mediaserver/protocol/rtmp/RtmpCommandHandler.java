@@ -34,11 +34,11 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, RtmpMessage msg) {
         try {
-            if (msg.typeId() == 8 || msg.typeId() == 9) {
+            if (msg.typeId() == RtmpConstants.TYPE_AUDIO || msg.typeId() == RtmpConstants.TYPE_VIDEO) {
                 onMedia(msg);
                 return;
             }
-            if (msg.typeId() != 20) {
+            if (msg.typeId() != RtmpConstants.TYPE_COMMAND_AMF0) {
                 return;
             }
             ByteBuf p = msg.payload();
@@ -75,9 +75,9 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
         if (appV instanceof String && !((String) appV).isEmpty()) {
             app = (String) appV;
         }
-        RtmpWriter.writeProtocolControl(ctx, 5, 5000000);
-        RtmpWriter.writeSetPeerBandwidth(ctx, 5000000, 2);
-        RtmpWriter.writeProtocolControl(ctx, 1, 4096);
+        RtmpWriter.writeProtocolControl(ctx, RtmpConstants.TYPE_WINDOW_ACK_SIZE, 5000000);
+        RtmpWriter.writeSetPeerBandwidth(ctx, 5000000, RtmpConstants.CSID_PROTOCOL);
+        RtmpWriter.writeProtocolControl(ctx, RtmpConstants.TYPE_SET_CHUNK_SIZE, 4096);
 
         ByteBuf resp = Unpooled.buffer();
         RtmpAmf0.writeString(resp, "_result");
@@ -166,7 +166,7 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
         if (publishingStream == null) {
             return;
         }
-        if (msg.typeId() == 9) {
+        if (msg.typeId() == RtmpConstants.TYPE_VIDEO) {
             publishingStream.onPublisherRtmpVideo(msg.payload(), msg.timestamp(), msg.messageStreamId() <= 0 ? 1 : msg.messageStreamId());
             return;
         }

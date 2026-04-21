@@ -18,11 +18,11 @@ public final class RtmpWriter {
         ByteBuf payload = Unpooled.buffer(5);
         payload.writeInt(value);
         payload.writeByte(limitType);
-        writeChunk(ctx, 2, 6, 0, 0, payload);
+        writeChunk(ctx, RtmpConstants.CSID_PROTOCOL, RtmpConstants.TYPE_SET_PEER_BANDWIDTH, 0, 0, payload);
     }
 
     public static void writeCommand(ChannelHandlerContext ctx, int messageStreamId, ByteBuf payload) {
-        writeChunk(ctx, 3, 20, messageStreamId, 0, payload);
+        writeChunk(ctx, RtmpConstants.CSID_COMMAND, RtmpConstants.TYPE_COMMAND_AMF0, messageStreamId, 0, payload);
     }
 
     public static void writeMedia(

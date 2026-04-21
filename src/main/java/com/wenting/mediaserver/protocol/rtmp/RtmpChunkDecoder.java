@@ -82,7 +82,7 @@ final class RtmpChunkDecoder extends ByteToMessageDecoder {
             if (hs.payload.readableBytes() >= hs.messageLength) {
                 ByteBuf full = hs.payload;
                 hs.payload = null;
-                if (hs.typeId == 1 && full.readableBytes() >= 4) {
+                if (hs.typeId == RtmpConstants.TYPE_SET_CHUNK_SIZE && full.readableBytes() >= 4) {
                     inChunkSize = Math.max(128, full.readInt());
                     full.release();
                 } else {

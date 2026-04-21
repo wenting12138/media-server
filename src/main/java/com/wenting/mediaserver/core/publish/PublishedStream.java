@@ -4,6 +4,7 @@ import com.wenting.mediaserver.core.model.MediaSession;
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.protocol.rtp.H264RtpDepacketizer;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
+import com.wenting.mediaserver.protocol.rtmp.RtmpConstants;
 import com.wenting.mediaserver.protocol.rtmp.RtmpWriter;
 import com.wenting.mediaserver.protocol.rtsp.RtspInterleavedWriter;
 import io.netty.buffer.ByteBuf;
@@ -93,11 +94,11 @@ public final class PublishedStream {
         rtmpSubscribers.addIfAbsent(ctx);
         ByteBuf vsh = rtmpVideoSeqHeader;
         if (vsh != null && vsh.isReadable()) {
-            RtmpWriter.writeMedia(ctx, 6, 9, messageStreamId, 0, vsh.retainedDuplicate());
+            RtmpWriter.writeMedia(ctx, RtmpConstants.CSID_VIDEO, RtmpConstants.TYPE_VIDEO, messageStreamId, 0, vsh.retainedDuplicate());
         }
         ByteBuf ash = rtmpAudioSeqHeader;
         if (ash != null && ash.isReadable()) {
-            RtmpWriter.writeMedia(ctx, 4, 8, messageStreamId, 0, ash.retainedDuplicate());
+            RtmpWriter.writeMedia(ctx, RtmpConstants.CSID_AUDIO, RtmpConstants.TYPE_AUDIO, messageStreamId, 0, ash.retainedDuplicate());
         }
     }
 
@@ -175,7 +176,7 @@ public final class PublishedStream {
         videoInPackets.incrementAndGet();
         videoInBytes.addAndGet(bytes);
         cacheRtmpSeqHeader(payload, true);
-        relayRtmpToSubscribers(9, payload, timestamp, messageStreamId);
+        relayRtmpToSubscribers(RtmpConstants.TYPE_VIDEO, payload, timestamp, messageStreamId);
         maybeLogStats();
     }
 
@@ -185,7 +186,7 @@ public final class PublishedStream {
         audioInPackets.incrementAndGet();
         audioInBytes.addAndGet(bytes);
         cacheRtmpSeqHeader(payload, false);
-        relayRtmpToSubscribers(8, payload, timestamp, messageStreamId);
+        relayRtmpToSubscribers(RtmpConstants.TYPE_AUDIO, payload, timestamp, messageStreamId);
         maybeLogStats();
     }
 
@@ -220,8 +221,8 @@ public final class PublishedStream {
                 rtmpSubscribers.remove(sub);
                 continue;
             }
-            RtmpWriter.writeMedia(sub, typeId == 9 ? 6 : 4, typeId, messageStreamId, timestamp, payload.retainedDuplicate());
-            if (typeId == 9) {
+            RtmpWriter.writeMedia(sub, typeId == RtmpConstants.TYPE_VIDEO ? RtmpConstants.CSID_VIDEO : RtmpConstants.CSID_AUDIO, typeId, messageStreamId, timestamp, payload.retainedDuplicate());
+            if (typeId == RtmpConstants.TYPE_VIDEO) {
                 videoOutTcpPackets.incrementAndGet();
                 videoOutTcpBytes.addAndGet(payload.readableBytes());
             } else {
