@@ -47,6 +47,11 @@ final class RtmpHandshakeHandler extends ByteToMessageDecoder {
             return;
         }
         in.skipBytes(C1_SIZE); // C2
+
+        RtmpSession session = new RtmpSession();
+        session.handshakeComplete();
+        ctx.channel().attr(RtmpSession.SESSION_KEY).set(session);
+
         ctx.pipeline().addLast(new RtmpChunkDecoder());
         ctx.pipeline().addLast(new RtmpCommandHandler(registry));
         ctx.pipeline().remove(this);
