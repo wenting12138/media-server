@@ -66,6 +66,9 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
                 case "FCPublish":
                     onFCPublish(ctx, session, txnVal, p);
                     break;
+                case "getStreamLength":
+                    onGetStreamLength(ctx, txnVal);
+                    break;
                 case "deleteStream":
                 case "closeStream":
                     onCloseStream(ctx, session);
@@ -85,6 +88,16 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
             cleanupSession(ctx, session);
             session.close();
         }
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        if (cause instanceof java.io.IOException) {
+            log.debug("RTMP connection closed: {}", cause.getMessage());
+        } else {
+            log.warn("RTMP unexpected exception", cause);
+        }
+        ctx.close();
     }
 
     private void onConnect(ChannelHandlerContext ctx, RtmpSession session, double txn, ByteBuf payload) {
@@ -183,14 +196,19 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
         }
         PublishedStream stream = published.get();
         int msid = messageStreamId <= 0 ? 1 : messageStreamId;
+
+        RtmpWriter.writeStreamBegin(ctx, msid);
+        sendOnStatus(ctx, msid, "status", "NetStream.Play.Reset", "Playing and resetting stream.");
+
         if (!session.play(stream, msid)) {
             log.warn("play rejected: state changed concurrently {}", session.state());
             sendOnStatus(ctx, messageStreamId, "error", "NetStream.Play.BadName", "invalid state");
             return;
         }
         stream.addRtmpSubscriber(ctx, msid);
+        sendOnStatus(ctx, msid, "status", "NetStream.Play.Start", "play started");
+        RtmpWriter.writeSampleAccess(ctx, msid);
         log.info("RTMP play start {}", key.path());
-        sendOnStatus(ctx, messageStreamId, "status", "NetStream.Play.Start", "play started");
     }
 
     private void onFCPublish(ChannelHandlerContext ctx, RtmpSession session, double txn, ByteBuf payload) {
@@ -206,6 +224,15 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
         RtmpAmf0.writeString(resp, "_result");
         RtmpAmf0.writeNumber(resp, txn);
         RtmpAmf0.writeNull(resp);
+        RtmpWriter.writeCommand(ctx, 0, resp);
+    }
+
+    private void onGetStreamLength(ChannelHandlerContext ctx, double txn) {
+        ByteBuf resp = Unpooled.buffer();
+        RtmpAmf0.writeString(resp, "_result");
+        RtmpAmf0.writeNumber(resp, txn);
+        RtmpAmf0.writeNull(resp);
+        RtmpAmf0.writeNumber(resp, 0.0);
         RtmpWriter.writeCommand(ctx, 0, resp);
     }
 

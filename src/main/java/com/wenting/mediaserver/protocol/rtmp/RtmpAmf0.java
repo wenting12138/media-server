@@ -80,6 +80,11 @@ final class RtmpAmf0 {
         out.writeDouble(v);
     }
 
+    static void writeBoolean(ByteBuf out, boolean v) {
+        out.writeByte(BOOLEAN);
+        out.writeByte(v ? 1 : 0);
+    }
+
     static void writeNull(ByteBuf out) {
         out.writeByte(NULL);
     }

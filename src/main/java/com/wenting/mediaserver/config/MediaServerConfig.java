@@ -7,7 +7,7 @@ public final class MediaServerConfig {
 
     private static final int DEFAULT_HTTP = 18080;
     private static final int DEFAULT_RTSP = 1554;
-    private static final int DEFAULT_RTMP = 2935;
+    private static final int DEFAULT_RTMP = 11935;
     private static final int DEFAULT_RTP_PORT_MIN = 20000;
     private static final int DEFAULT_RTP_PORT_MAX = 30000;
 

@@ -35,7 +35,23 @@ public final class PublishedStream {
     private final CopyOnWriteArrayList<Channel> subscribers = new CopyOnWriteArrayList<Channel>();
     private final CopyOnWriteArrayList<InetSocketAddress> udpVideoSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
     private final CopyOnWriteArrayList<InetSocketAddress> udpAudioSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
-    private final CopyOnWriteArrayList<ChannelHandlerContext> rtmpSubscribers = new CopyOnWriteArrayList<ChannelHandlerContext>();
+    private static final class RtmpSubscriber {
+        final ChannelHandlerContext ctx;
+        final int messageStreamId;
+        RtmpSubscriber(ChannelHandlerContext ctx, int messageStreamId) {
+            this.ctx = ctx;
+            this.messageStreamId = messageStreamId;
+        }
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof RtmpSubscriber && ((RtmpSubscriber) o).ctx == ctx;
+        }
+        @Override
+        public int hashCode() {
+            return System.identityHashCode(ctx);
+        }
+    }
+    private final CopyOnWriteArrayList<RtmpSubscriber> rtmpSubscribers = new CopyOnWriteArrayList<RtmpSubscriber>();
     private volatile RtpUdpMediaPlane rtpUdpPlane;
     private volatile ByteBuf rtmpVideoSeqHeader;
     private volatile ByteBuf rtmpAudioSeqHeader;
@@ -91,7 +107,8 @@ public final class PublishedStream {
         if (ctx == null) {
             return;
         }
-        rtmpSubscribers.addIfAbsent(ctx);
+        RtmpSubscriber sub = new RtmpSubscriber(ctx, messageStreamId);
+        rtmpSubscribers.addIfAbsent(sub);
         ByteBuf vsh = rtmpVideoSeqHeader;
         if (vsh != null && vsh.isReadable()) {
             RtmpWriter.writeMedia(ctx, RtmpConstants.CSID_VIDEO, RtmpConstants.TYPE_VIDEO, messageStreamId, 0, vsh.retainedDuplicate());
@@ -104,7 +121,7 @@ public final class PublishedStream {
 
     public void removeRtmpSubscriber(ChannelHandlerContext ctx) {
         if (ctx != null) {
-            rtmpSubscribers.remove(ctx);
+            rtmpSubscribers.remove(new RtmpSubscriber(ctx, 0));
         }
     }
 
@@ -214,14 +231,14 @@ public final class PublishedStream {
         }
     }
 
-    private void relayRtmpToSubscribers(int typeId, ByteBuf payload, int timestamp, int messageStreamId) {
-        List<ChannelHandlerContext> snapshot = new ArrayList<ChannelHandlerContext>(rtmpSubscribers);
-        for (ChannelHandlerContext sub : snapshot) {
-            if (sub == null || !sub.channel().isActive()) {
+    private void relayRtmpToSubscribers(int typeId, ByteBuf payload, int timestamp, int publisherMessageStreamId) {
+        List<RtmpSubscriber> snapshot = new ArrayList<RtmpSubscriber>(rtmpSubscribers);
+        for (RtmpSubscriber sub : snapshot) {
+            if (sub == null || !sub.ctx.channel().isActive()) {
                 rtmpSubscribers.remove(sub);
                 continue;
             }
-            RtmpWriter.writeMedia(sub, typeId == RtmpConstants.TYPE_VIDEO ? RtmpConstants.CSID_VIDEO : RtmpConstants.CSID_AUDIO, typeId, messageStreamId, timestamp, payload.retainedDuplicate());
+            RtmpWriter.writeMedia(sub.ctx, typeId == RtmpConstants.TYPE_VIDEO ? RtmpConstants.CSID_VIDEO : RtmpConstants.CSID_AUDIO, typeId, sub.messageStreamId, timestamp, payload.retainedDuplicate());
             if (typeId == RtmpConstants.TYPE_VIDEO) {
                 videoOutTcpPackets.incrementAndGet();
                 videoOutTcpBytes.addAndGet(payload.readableBytes());
@@ -276,7 +293,7 @@ public final class PublishedStream {
         if (now - statsLogAtMs < STATS_LOG_INTERVAL_MS) {
             return;
         }
-        if (subscribers.isEmpty() && udpVideoSubscribers.isEmpty() && udpAudioSubscribers.isEmpty()) {
+        if (subscribers.isEmpty() && udpVideoSubscribers.isEmpty() && udpAudioSubscribers.isEmpty() && rtmpSubscribers.isEmpty()) {
             statsLogAtMs = now;
             return;
         }
@@ -285,7 +302,7 @@ public final class PublishedStream {
                 "RTP relay stats stream={} "
                         + "video(in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=udp:{}) "
                         + "audio(in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=udp:{}) "
-                        + "subs=tcp:{}",
+                        + "subs=tcp:{}, rtmp={}",
                 key.path(),
                 videoInPackets.get(),
                 videoInBytes.get(),
@@ -301,7 +318,8 @@ public final class PublishedStream {
                 audioOutUdpPackets.get(),
                 audioOutUdpBytes.get(),
                 udpAudioSubscribers.size(),
-                subscribers.size());
+                subscribers.size(),
+                rtmpSubscribers.size());
     }
 
     public void shutdown() {
