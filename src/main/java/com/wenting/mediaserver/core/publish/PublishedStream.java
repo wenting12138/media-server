@@ -69,6 +69,7 @@ public final class PublishedStream {
     private final AtomicLong audioOutTcpBytes = new AtomicLong();
     private final AtomicLong audioOutUdpPackets = new AtomicLong();
     private final AtomicLong audioOutUdpBytes = new AtomicLong();
+    private final AtomicLong rtmpDroppedPackets = new AtomicLong();
     private volatile long statsLogAtMs = System.currentTimeMillis();
 
     public PublishedStream(StreamKey key, MediaSession publisherSession) {
@@ -257,6 +258,10 @@ public final class PublishedStream {
                 rtmpSubscribers.remove(sub);
                 continue;
             }
+            if (!sub.ctx.channel().isWritable()) {
+                rtmpDroppedPackets.incrementAndGet();
+                continue;
+            }
             if (typeId == RtmpConstants.TYPE_DATA_AMF0) {
                 RtmpWriter.writeData(sub.ctx, sub.messageStreamId, timestamp, payload.retainedDuplicate());
                 continue;
@@ -325,7 +330,7 @@ public final class PublishedStream {
                 "RTP relay stats stream={} "
                         + "video(in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=udp:{}) "
                         + "audio(in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=udp:{}) "
-                        + "subs=tcp:{}, rtmp={}",
+                        + "subs=tcp:{}, rtmp={}, rtmpDrop={}",
                 key.path(),
                 videoInPackets.get(),
                 videoInBytes.get(),
@@ -342,7 +347,8 @@ public final class PublishedStream {
                 audioOutUdpBytes.get(),
                 udpAudioSubscribers.size(),
                 subscribers.size(),
-                rtmpSubscribers.size());
+                rtmpSubscribers.size(),
+                rtmpDroppedPackets.get());
     }
 
     public void shutdown() {

@@ -12,6 +12,7 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
@@ -83,7 +84,10 @@ public final class MediaServerBootstrap implements AutoCloseable {
         ServerBootstrap rtmp = new ServerBootstrap();
         rtmp.group(boss, worker)
                 .channel(NioServerSocketChannel.class)
-                .childHandler(new RtmpChannelInitializer(registry));
+                .childHandler(new RtmpChannelInitializer(registry))
+                .childOption(ChannelOption.TCP_NODELAY, true)
+                .childOption(ChannelOption.SO_KEEPALIVE, true)
+                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(256 * 1024, 1024 * 1024));
         Channel rtmpChannel = rtmp.bind(config.rtmpPort()).sync().channel();
         channels.add(rtmpChannel);
         log.info("RTMP listening on {}", rtmpChannel.localAddress());

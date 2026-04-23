@@ -3,9 +3,15 @@ package com.wenting.mediaserver.protocol.rtmp;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 public final class RtmpWriter {
+    private static final AttributeKey<AtomicBoolean> FLUSH_SCHEDULED_KEY =
+            AttributeKey.valueOf("rtmp.flush.scheduled");
+
     private RtmpWriter() {
     }
 
@@ -98,9 +104,31 @@ public final class RtmpWriter {
                 offset += toWrite;
             }
 
-            ctx.flush();
+            requestFlush(ctx);
         } finally {
             ReferenceCountUtil.safeRelease(payload);
         }
+    }
+
+    private static void requestFlush(ChannelHandlerContext ctx) {
+        AtomicBoolean scheduled = ctx.channel().attr(FLUSH_SCHEDULED_KEY).get();
+        if (scheduled == null) {
+            AtomicBoolean init = new AtomicBoolean(false);
+            AtomicBoolean existing = ctx.channel().attr(FLUSH_SCHEDULED_KEY).setIfAbsent(init);
+            scheduled = existing == null ? init : existing;
+        }
+        if (!scheduled.compareAndSet(false, true)) {
+            return;
+        }
+        final AtomicBoolean state = scheduled;
+        ctx.executor().execute(() -> {
+            try {
+                if (ctx.channel().isActive()) {
+                    ctx.flush();
+                }
+            } finally {
+                state.set(false);
+            }
+        });
     }
 }
