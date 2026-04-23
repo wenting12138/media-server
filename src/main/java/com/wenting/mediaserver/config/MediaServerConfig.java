@@ -15,6 +15,7 @@ public final class MediaServerConfig {
     private static final String DEFAULT_TRANSCODE_OUTPUT_SUFFIX = "__wm";
     private static final String DEFAULT_TRANSCODE_INPUT_HOST = "127.0.0.1";
     private static final int DEFAULT_TRANSCODE_QUEUE_SIZE = 2048;
+    private static final String DEFAULT_RTMP_TRANSCODER = "ffmpeg";
 
     private final int httpPort;
     private final int rtspPort;
@@ -26,6 +27,7 @@ public final class MediaServerConfig {
     private final String transcodeOutputSuffix;
     private final String transcodeInputHost;
     private final int transcodeQueueSize;
+    private final String rtmpTranscoder;
 
     public MediaServerConfig(int httpPort, int rtspPort, int rtmpPort, int rtpPortMin, int rtpPortMax) {
         this(
@@ -38,7 +40,8 @@ public final class MediaServerConfig {
                 DEFAULT_FFMPEG_BIN,
                 DEFAULT_TRANSCODE_OUTPUT_SUFFIX,
                 DEFAULT_TRANSCODE_INPUT_HOST,
-                DEFAULT_TRANSCODE_QUEUE_SIZE);
+                DEFAULT_TRANSCODE_QUEUE_SIZE,
+                DEFAULT_RTMP_TRANSCODER);
     }
 
     public MediaServerConfig(
@@ -51,7 +54,8 @@ public final class MediaServerConfig {
             String ffmpegBin,
             String transcodeOutputSuffix,
             String transcodeInputHost,
-            int transcodeQueueSize) {
+            int transcodeQueueSize,
+            String rtmpTranscoder) {
         this.httpPort = httpPort;
         this.rtspPort = rtspPort;
         this.rtmpPort = rtmpPort;
@@ -66,6 +70,9 @@ public final class MediaServerConfig {
                 ? DEFAULT_TRANSCODE_INPUT_HOST
                 : transcodeInputHost.trim();
         this.transcodeQueueSize = transcodeQueueSize <= 0 ? DEFAULT_TRANSCODE_QUEUE_SIZE : transcodeQueueSize;
+        this.rtmpTranscoder = rtmpTranscoder == null || rtmpTranscoder.trim().isEmpty()
+                ? DEFAULT_RTMP_TRANSCODER
+                : rtmpTranscoder.trim();
     }
 
     public static MediaServerConfig fromEnvironment() {
@@ -88,6 +95,7 @@ public final class MediaServerConfig {
         String suffix = parseString(System.getenv("MEDIA_TRANSCODE_SUFFIX"), DEFAULT_TRANSCODE_OUTPUT_SUFFIX);
         String inputHost = parseString(System.getenv("MEDIA_TRANSCODE_INPUT_HOST"), DEFAULT_TRANSCODE_INPUT_HOST);
         int queueSize = parsePositiveInt(System.getenv("MEDIA_TRANSCODE_QUEUE_SIZE"), DEFAULT_TRANSCODE_QUEUE_SIZE);
+        String rtmpTranscoder = parseString(System.getenv("MEDIA_RTMP_TRANSCODER"), DEFAULT_RTMP_TRANSCODER);
         return new MediaServerConfig(
                 http,
                 rtsp,
@@ -98,7 +106,8 @@ public final class MediaServerConfig {
                 ffmpegBin,
                 suffix,
                 inputHost,
-                queueSize);
+                queueSize,
+                rtmpTranscoder);
     }
 
     private static int parsePort(String raw, int fallback) {
@@ -187,6 +196,10 @@ public final class MediaServerConfig {
 
     public int transcodeQueueSize() {
         return transcodeQueueSize;
+    }
+
+    public String rtmpTranscoder() {
+        return rtmpTranscoder;
     }
 
     public String version() {

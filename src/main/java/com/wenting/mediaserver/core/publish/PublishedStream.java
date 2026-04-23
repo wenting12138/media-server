@@ -2,11 +2,11 @@ package com.wenting.mediaserver.core.publish;
 
 import com.wenting.mediaserver.core.model.MediaSession;
 import com.wenting.mediaserver.core.model.StreamKey;
+import com.wenting.mediaserver.core.transcode.EncodedMediaPacket;
 import com.wenting.mediaserver.core.transcode.StreamFrameProcessor;
 import com.wenting.mediaserver.protocol.rtp.H264RtpDepacketizer;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import com.wenting.mediaserver.protocol.rtmp.RtmpConstants;
-import com.wenting.mediaserver.protocol.rtmp.RtmpMediaPacket;
 import com.wenting.mediaserver.protocol.rtmp.RtmpWriter;
 import com.wenting.mediaserver.protocol.rtsp.RtspInterleavedWriter;
 import io.netty.buffer.ByteBuf;
@@ -180,6 +180,14 @@ public final class PublishedStream {
         int rtpBytes = rtp.readableBytes();
         videoInPackets.incrementAndGet();
         videoInBytes.addAndGet(rtpBytes);
+        processPacket(
+                EncodedMediaPacket.SourceProtocol.RTSP,
+                EncodedMediaPacket.TrackType.VIDEO,
+                EncodedMediaPacket.CodecType.H264,
+                EncodedMediaPacket.PayloadFormat.RTP_PACKET,
+                0,
+                1,
+                rtp);
         h264.ingest(rtp, nal -> {
             try {
                 if (log.isTraceEnabled() && nal != null && nal.readableBytes() > 5) {
@@ -202,6 +210,14 @@ public final class PublishedStream {
         int rtpBytes = rtp.readableBytes();
         audioInPackets.incrementAndGet();
         audioInBytes.addAndGet(rtpBytes);
+        processPacket(
+                EncodedMediaPacket.SourceProtocol.RTSP,
+                EncodedMediaPacket.TrackType.AUDIO,
+                EncodedMediaPacket.CodecType.UNKNOWN,
+                EncodedMediaPacket.PayloadFormat.RTP_PACKET,
+                0,
+                1,
+                rtp);
         relayRtp(rtp, rtpBytes, 2, udpAudioSubscribers, false);
         maybeLogStats();
     }
@@ -211,7 +227,14 @@ public final class PublishedStream {
         int bytes = payload.readableBytes();
         videoInPackets.incrementAndGet();
         videoInBytes.addAndGet(bytes);
-        processRtmpPacket(RtmpMediaPacket.Kind.VIDEO, RtmpConstants.TYPE_VIDEO, timestamp, messageStreamId, payload);
+        processPacket(
+                EncodedMediaPacket.SourceProtocol.RTMP,
+                EncodedMediaPacket.TrackType.VIDEO,
+                EncodedMediaPacket.CodecType.H264,
+                EncodedMediaPacket.PayloadFormat.RTMP_TAG,
+                timestamp,
+                messageStreamId,
+                payload);
         cacheRtmpSeqHeader(payload, true);
         relayRtmpToSubscribers(RtmpConstants.TYPE_VIDEO, payload, timestamp, messageStreamId);
         maybeLogStats();
@@ -222,7 +245,14 @@ public final class PublishedStream {
         int bytes = payload.readableBytes();
         audioInPackets.incrementAndGet();
         audioInBytes.addAndGet(bytes);
-        processRtmpPacket(RtmpMediaPacket.Kind.AUDIO, RtmpConstants.TYPE_AUDIO, timestamp, messageStreamId, payload);
+        processPacket(
+                EncodedMediaPacket.SourceProtocol.RTMP,
+                EncodedMediaPacket.TrackType.AUDIO,
+                EncodedMediaPacket.CodecType.AAC,
+                EncodedMediaPacket.PayloadFormat.RTMP_TAG,
+                timestamp,
+                messageStreamId,
+                payload);
         cacheRtmpSeqHeader(payload, false);
         relayRtmpToSubscribers(RtmpConstants.TYPE_AUDIO, payload, timestamp, messageStreamId);
         maybeLogStats();
@@ -230,23 +260,39 @@ public final class PublishedStream {
 
     public void onPublisherRtmpData(ByteBuf payload, int timestamp, int messageStreamId) {
         publisherSession.touch();
-        processRtmpPacket(RtmpMediaPacket.Kind.DATA, RtmpConstants.TYPE_DATA_AMF0, timestamp, messageStreamId, payload);
+        processPacket(
+                EncodedMediaPacket.SourceProtocol.RTMP,
+                EncodedMediaPacket.TrackType.DATA,
+                EncodedMediaPacket.CodecType.UNKNOWN,
+                EncodedMediaPacket.PayloadFormat.RTMP_TAG,
+                timestamp,
+                messageStreamId,
+                payload);
         cacheRtmpMetadata(payload);
         relayRtmpToSubscribers(RtmpConstants.TYPE_DATA_AMF0, payload, timestamp, messageStreamId);
     }
 
-    private void processRtmpPacket(RtmpMediaPacket.Kind kind, int typeId, int timestamp, int messageStreamId, ByteBuf payload) {
+    private void processPacket(
+            EncodedMediaPacket.SourceProtocol sourceProtocol,
+            EncodedMediaPacket.TrackType trackType,
+            EncodedMediaPacket.CodecType codecType,
+            EncodedMediaPacket.PayloadFormat payloadFormat,
+            int timestamp,
+            int messageStreamId,
+            ByteBuf payload) {
         if (payload == null || !payload.isReadable()) {
             return;
         }
-        RtmpMediaPacket packet = new RtmpMediaPacket(
-                kind,
-                typeId,
+        EncodedMediaPacket packet = new EncodedMediaPacket(
+                sourceProtocol,
+                trackType,
+                codecType,
+                payloadFormat,
                 timestamp,
                 messageStreamId <= 0 ? 1 : messageStreamId,
                 payload.retainedDuplicate());
         try {
-            frameProcessor.onRtmpPacket(key, packet);
+            frameProcessor.onPacket(key, packet);
         } finally {
             packet.release();
         }

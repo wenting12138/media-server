@@ -3,7 +3,7 @@ package com.wenting.mediaserver.core.registry;
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.core.publish.PublishedStream;
 import com.wenting.mediaserver.core.transcode.StreamFrameProcessor;
-import com.wenting.mediaserver.protocol.rtmp.RtmpMediaPacket;
+import com.wenting.mediaserver.core.transcode.EncodedMediaPacket;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.Test;
@@ -48,7 +48,7 @@ class StreamRegistryTest {
             }
 
             @Override
-            public void onRtmpPacket(StreamKey key, RtmpMediaPacket packet) {
+            public void onPacket(StreamKey key, EncodedMediaPacket packet) {
                 packets.incrementAndGet();
             }
 

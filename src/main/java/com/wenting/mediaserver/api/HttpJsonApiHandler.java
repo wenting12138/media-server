@@ -78,6 +78,7 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
         data.put("rtspPort", config.rtspPort());
         data.put("rtmpPort", config.rtmpPort());
         data.put("transcodeEnabled", config.transcodeEnabled());
+        data.put("rtmpTranscoder", config.rtmpTranscoder());
         data.put("transcodeSuffix", config.transcodeOutputSuffix());
         data.put("transcodeInputHost", config.transcodeInputHost());
         data.put("version", config.version());

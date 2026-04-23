@@ -2,7 +2,6 @@ package com.wenting.mediaserver.core.transcode;
 
 import com.wenting.mediaserver.config.MediaServerConfig;
 import com.wenting.mediaserver.core.model.StreamKey;
-import com.wenting.mediaserver.protocol.rtmp.RtmpMediaPacket;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,7 +20,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Stream-level ffmpeg transcode worker manager.
  */
-public final class FfmpegTranscodeProcessor implements StreamFrameProcessor, AutoCloseable {
+public final class FfmpegTranscodeProcessor implements StreamTranscoder {
 
     private static final Logger log = LoggerFactory.getLogger(FfmpegTranscodeProcessor.class);
     private static final String DRAW_TEXT_TEMPLATE =
@@ -64,7 +63,14 @@ public final class FfmpegTranscodeProcessor implements StreamFrameProcessor, Aut
     }
 
     @Override
-    public void onPublishStart(StreamKey key, String sdpText) {
+    public String name() {
+        return "ffmpeg";
+    }
+
+    @Override
+    public void onPublishStart(PublishContext context) {
+        StreamKey key = context.streamKey();
+        String sdpText = context.sdpText();
         if (!enabled || isDerivedStream(key)) {
             return;
         }
@@ -76,7 +82,8 @@ public final class FfmpegTranscodeProcessor implements StreamFrameProcessor, Aut
     }
 
     @Override
-    public void onRtmpPacket(StreamKey key, RtmpMediaPacket packet) {
+    public void onPacket(PublishContext context, EncodedMediaPacket packet) {
+        StreamKey key = context.streamKey();
         if (!enabled || isDerivedStream(key)) {
             return;
         }
@@ -87,7 +94,8 @@ public final class FfmpegTranscodeProcessor implements StreamFrameProcessor, Aut
     }
 
     @Override
-    public void onPublishStop(StreamKey key) {
+    public void onPublishStop(PublishContext context) {
+        StreamKey key = context.streamKey();
         Worker worker = workers.remove(key);
         if (worker != null) {
             worker.stop();
@@ -145,8 +153,8 @@ public final class FfmpegTranscodeProcessor implements StreamFrameProcessor, Aut
             }
         }
 
-        private void enqueue(RtmpMediaPacket packet) {
-            FrameEvent event = new FrameEvent(packet.kind(), packet.timestamp(), packet.payload().readableBytes());
+        private void enqueue(EncodedMediaPacket packet) {
+            FrameEvent event = new FrameEvent(packet.trackType(), packet.timestamp(), packet.payload().readableBytes());
             if (!queue.offer(event)) {
                 queue.poll();
                 if (!queue.offer(event)) {
@@ -200,9 +208,8 @@ public final class FfmpegTranscodeProcessor implements StreamFrameProcessor, Aut
                     : "rtmp://" + inputHost + ":" + rtmpPort + "/" + key.path();
             String outputRtsp = "rtsp://" + inputHost + ":" + rtspPort + "/" + key.app() + "/" + key.stream() + outputSuffix;
             String outputRtmp = "rtmp://" + inputHost + ":" + rtmpPort + "/" + key.app() + "/" + key.stream() + outputSuffix;
-            String teeOutputs =
-                    "[f=flv:onfail=ignore]" + outputRtmp
-                            + "|[f=rtsp:rtsp_transport=tcp:onfail=ignore]" + outputRtsp;
+            boolean outputToRtsp = rtspSource;
+            String outputUrl = outputToRtsp ? outputRtsp : outputRtmp;
 
             List<String> command = new ArrayList<String>();
             command.add(ffmpegBin);
@@ -237,16 +244,20 @@ public final class FfmpegTranscodeProcessor implements StreamFrameProcessor, Aut
             command.add("0:a:0?");
             command.add("-c:a");
             command.add("aac");
+            if (outputToRtsp) {
+                command.add("-rtsp_transport");
+                command.add("tcp");
+            }
             command.add("-f");
-            command.add("tee");
-            command.add(teeOutputs);
+            command.add(outputToRtsp ? "rtsp" : "flv");
+            command.add(outputUrl);
 
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.redirectErrorStream(true);
             Process p = pb.start();
             startLogPump(key, p);
-            log.info("Started ffmpeg transcode stream={} source={} input={} outputs=[{}, {}]",
-                    key.path(), rtspSource ? "rtsp" : "rtmp", inputUrl, outputRtmp, outputRtsp);
+            log.info("Started ffmpeg transcode stream={} source={} input={} output={}",
+                    key.path(), rtspSource ? "rtsp" : "rtmp", inputUrl, outputUrl);
             return p;
         }
 
@@ -334,11 +345,11 @@ public final class FfmpegTranscodeProcessor implements StreamFrameProcessor, Aut
     }
 
     private static final class FrameEvent {
-        private final RtmpMediaPacket.Kind kind;
+        private final EncodedMediaPacket.TrackType kind;
         private final int timestamp;
         private final int payloadSize;
 
-        private FrameEvent(RtmpMediaPacket.Kind kind, int timestamp, int payloadSize) {
+        private FrameEvent(EncodedMediaPacket.TrackType kind, int timestamp, int payloadSize) {
             this.kind = kind;
             this.timestamp = timestamp;
             this.payloadSize = payloadSize;

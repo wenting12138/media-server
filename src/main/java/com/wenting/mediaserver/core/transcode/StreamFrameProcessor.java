@@ -1,7 +1,6 @@
 package com.wenting.mediaserver.core.transcode;
 
 import com.wenting.mediaserver.core.model.StreamKey;
-import com.wenting.mediaserver.protocol.rtmp.RtmpMediaPacket;
 
 /**
  * Pluggable sink for publisher-side frames. Default implementation is no-op.
@@ -14,7 +13,7 @@ public interface StreamFrameProcessor {
         }
 
         @Override
-        public void onRtmpPacket(StreamKey key, RtmpMediaPacket packet) {
+        public void onPacket(StreamKey key, EncodedMediaPacket packet) {
         }
 
         @Override
@@ -24,7 +23,7 @@ public interface StreamFrameProcessor {
 
     void onPublishStart(StreamKey key, String sdpText);
 
-    void onRtmpPacket(StreamKey key, RtmpMediaPacket packet);
+    void onPacket(StreamKey key, EncodedMediaPacket packet);
 
     void onPublishStop(StreamKey key);
 }

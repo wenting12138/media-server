@@ -228,7 +228,12 @@ final class RtspStateMachine {
                 session.setVideoInterleaved(ch[0], ch[1]);
             }
             session.incrementSetupRound();
-            ctx.writeAndFlush(RtspResponses.setupTcp(cseq, session.rtspSessionId(), ch[0], ch[1]));
+            ctx.writeAndFlush(RtspResponses.setupTcp(
+                    cseq,
+                    session.rtspSessionId(),
+                    ch[0],
+                    ch[1],
+                    state.isPublisherSide() ? "record" : "play"));
             return;
         }
         session.setRtpTransportMode(RtpTransportMode.UDP);
@@ -301,7 +306,8 @@ final class RtspStateMachine {
                     recv.serverRtpPort(),
                     recv.serverRtcpPort(),
                     clientPorts[0],
-                    clientPorts[1]));
+                    clientPorts[1],
+                    "record"));
             return;
         }
         if (state.isSubscriberSide()) {
@@ -342,7 +348,8 @@ final class RtspStateMachine {
                     sRtp,
                     sRtcp,
                     clientPorts[0],
-                    clientPorts[1]));
+                    clientPorts[1],
+                    "play"));
             return;
         }
         ctx.writeAndFlush(RtspResponses.error(cseq, WRONG_STATE));
@@ -350,10 +357,17 @@ final class RtspStateMachine {
 
     private void onRecord(ChannelHandlerContext ctx, RtspRequestMessage req, int cseq) {
         if (state != RtspFsmState.PUBLISHER_NEGOTIATING) {
+            log.warn("RTSP RECORD rejected (wrong state) state={} uri={} cseq={}", state, req.uri(), cseq);
             ctx.writeAndFlush(RtspResponses.error(cseq, WRONG_STATE));
             return;
         }
         if (!sessionMatches(req)) {
+            log.warn(
+                    "RTSP RECORD session mismatch uri={} cseq={} header={} expected={}",
+                    req.uri(),
+                    cseq,
+                    req.header("Session"),
+                    session.rtspSessionId());
             ctx.writeAndFlush(RtspResponses.error(cseq, SESSION_NOT_FOUND));
             return;
         }
@@ -361,6 +375,7 @@ final class RtspStateMachine {
         Optional<PublishedStream> publishResult =
                 registry.tryPublish(session.streamKey(), publisherSessionId, session.sdpText(), ctx.channel());
         if (!publishResult.isPresent()) {
+            log.warn("RTSP RECORD stream already in use path={} session={}", session.streamKey().path(), publisherSessionId);
             ctx.writeAndFlush(RtspResponses.error(cseq, STREAM_IN_USE));
             return;
         }

@@ -3,7 +3,8 @@ package com.wenting.mediaserver.bootstrap;
 import com.wenting.mediaserver.api.HttpJsonApiHandler;
 import com.wenting.mediaserver.config.MediaServerConfig;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
-import com.wenting.mediaserver.core.transcode.FfmpegTranscodeProcessor;
+import com.wenting.mediaserver.core.transcode.StreamTranscodeDispatcher;
+import com.wenting.mediaserver.core.transcode.StreamTranscoderFactory;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import com.wenting.mediaserver.protocol.rtmp.RtmpChannelInitializer;
 import com.wenting.mediaserver.protocol.rtsp.RtspChannelInitializer;
@@ -35,7 +36,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(MediaServerBootstrap.class);
 
     private final MediaServerConfig config;
-    private final FfmpegTranscodeProcessor transcodeProcessor;
+    private final StreamTranscodeDispatcher transcodeDispatcher;
     private final StreamRegistry registry;
     private final EventLoopGroup boss = new NioEventLoopGroup(1);
     private final EventLoopGroup worker = new NioEventLoopGroup();
@@ -44,8 +45,8 @@ public final class MediaServerBootstrap implements AutoCloseable {
 
     public MediaServerBootstrap(MediaServerConfig config) {
         this.config = config;
-        this.transcodeProcessor = new FfmpegTranscodeProcessor(config);
-        this.registry = new StreamRegistry(transcodeProcessor, config.transcodeOutputSuffix());
+        this.transcodeDispatcher = new StreamTranscodeDispatcher(StreamTranscoderFactory.create(config));
+        this.registry = new StreamRegistry(transcodeDispatcher, config.transcodeOutputSuffix());
         this.rtpUdpPlane = new RtpUdpMediaPlane(worker, config.rtpPortMin(), config.rtpPortMax());
     }
 
@@ -104,7 +105,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
         for (Channel ch : channels) {
             ch.close();
         }
-        transcodeProcessor.close();
+        transcodeDispatcher.close();
         rtpUdpPlane.close();
         worker.shutdownGracefully();
         boss.shutdownGracefully();

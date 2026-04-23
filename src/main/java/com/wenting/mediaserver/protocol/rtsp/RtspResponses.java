@@ -58,15 +58,18 @@ public final class RtspResponses {
         return okEmpty(cseq);
     }
 
-    public static FullHttpResponse setupTcp(int cseq, String sessionId, int rtpCh, int rtcpCh) {
+    public static FullHttpResponse setupTcp(int cseq, String sessionId, int rtpCh, int rtcpCh, String mode) {
         DefaultFullHttpResponse r = new DefaultFullHttpResponse(
                 RtspVersions.RTSP_1_0,
                 HttpResponseStatus.OK,
                 Unpooled.EMPTY_BUFFER);
         withCseq(r, cseq);
         r.headers().set(RtspHeaderNames.SESSION, sessionId + ";timeout=60");
-        r.headers().set(RtspHeaderNames.TRANSPORT,
-                "RTP/AVP/TCP;unicast;interleaved=" + rtpCh + "-" + rtcpCh);
+        String transport = "RTP/AVP/TCP;unicast;interleaved=" + rtpCh + "-" + rtcpCh;
+        if (mode != null && !mode.isEmpty()) {
+            transport = transport + ";mode=" + mode;
+        }
+        r.headers().set(RtspHeaderNames.TRANSPORT, transport);
         return r;
     }
 
@@ -76,16 +79,20 @@ public final class RtspResponses {
             int serverRtp,
             int serverRtcp,
             int clientRtp,
-            int clientRtcp) {
+            int clientRtcp,
+            String mode) {
         DefaultFullHttpResponse resp = new DefaultFullHttpResponse(
                 RtspVersions.RTSP_1_0,
                 HttpResponseStatus.OK,
                 Unpooled.EMPTY_BUFFER);
         withCseq(resp, cseq);
         resp.headers().set(RtspHeaderNames.SESSION, sessionId + ";timeout=60");
-        resp.headers().set(RtspHeaderNames.TRANSPORT,
-                "RTP/AVP;unicast;client_port=" + clientRtp + "-" + clientRtcp
-                        + ";server_port=" + serverRtp + "-" + serverRtcp);
+        String transport = "RTP/AVP;unicast;client_port=" + clientRtp + "-" + clientRtcp
+                + ";server_port=" + serverRtp + "-" + serverRtcp;
+        if (mode != null && !mode.isEmpty()) {
+            transport = transport + ";mode=" + mode;
+        }
+        resp.headers().set(RtspHeaderNames.TRANSPORT, transport);
         return resp;
     }
 
