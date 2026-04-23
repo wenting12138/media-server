@@ -40,6 +40,10 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
                 onMedia(session, msg);
                 return;
             }
+            if (msg.typeId() == RtmpConstants.TYPE_DATA_AMF0) {
+                onData(session, msg);
+                return;
+            }
             if (msg.typeId() != RtmpConstants.TYPE_COMMAND_AMF0) {
                 return;
             }
@@ -281,6 +285,18 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
         } else {
             stream.onPublisherRtmpAudio(msg.payload(), msg.timestamp(), msid);
         }
+    }
+
+    private void onData(RtmpSession session, RtmpMessage msg) {
+        if (session.state() != RtmpSession.State.PUBLISHING) {
+            return;
+        }
+        PublishedStream stream = session.publishingStream();
+        if (stream == null) {
+            return;
+        }
+        int msid = msg.messageStreamId() <= 0 ? 1 : msg.messageStreamId();
+        stream.onPublisherRtmpData(msg.payload(), msg.timestamp(), msid);
     }
 
     private StreamKey toStreamKey(String app, String streamName) {

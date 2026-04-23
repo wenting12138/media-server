@@ -3,6 +3,7 @@ package com.wenting.mediaserver.protocol.rtmp;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.util.ReferenceCountUtil;
 
 public final class RtmpWriter {
     private RtmpWriter() {
@@ -50,6 +51,10 @@ public final class RtmpWriter {
         writeChunk(ctx, RtmpConstants.CSID_COMMAND, RtmpConstants.TYPE_DATA_AMF0, messageStreamId, 0, payload);
     }
 
+    public static void writeData(ChannelHandlerContext ctx, int messageStreamId, int timestamp, ByteBuf payload) {
+        writeChunk(ctx, RtmpConstants.CSID_COMMAND, RtmpConstants.TYPE_DATA_AMF0, messageStreamId, timestamp, payload);
+    }
+
     public static void writeChunk(
             ChannelHandlerContext ctx,
             int csid,
@@ -57,33 +62,45 @@ public final class RtmpWriter {
             int messageStreamId,
             int timestamp,
             ByteBuf payload) {
-        final int chunkSize = 4096;
-        int len = payload.readableBytes();
-        int offset = payload.readerIndex();
+        try {
+            final int chunkSize = 4096;
+            int len = payload.readableBytes();
+            int offset = payload.readerIndex();
+            int safeTimestamp = timestamp < 0 ? 0 : timestamp;
+            boolean extendedTimestamp = safeTimestamp >= 0xFFFFFF;
 
-        int firstPayload = Math.min(len, chunkSize);
-        ByteBuf out = Unpooled.buffer(1 + 11 + firstPayload);
-        out.writeByte(csid & 0x3F); // fmt=0, full message header
-        RtmpChunkDecoder.write24(out, timestamp < 0 ? 0 : Math.min(timestamp, 0xFFFFFF));
-        RtmpChunkDecoder.write24(out, len);
-        out.writeByte(typeId & 0xFF);
-        RtmpChunkDecoder.writeLittleEndianInt(out, messageStreamId);
-        out.writeBytes(payload, offset, firstPayload);
-        ctx.write(out);
+            int firstPayload = Math.min(len, chunkSize);
+            ByteBuf out = Unpooled.buffer(1 + 11 + (extendedTimestamp ? 4 : 0) + firstPayload);
+            out.writeByte(csid & 0x3F); // fmt=0, full message header
+            RtmpChunkDecoder.write24(out, extendedTimestamp ? 0xFFFFFF : safeTimestamp);
+            RtmpChunkDecoder.write24(out, len);
+            out.writeByte(typeId & 0xFF);
+            RtmpChunkDecoder.writeLittleEndianInt(out, messageStreamId);
+            if (extendedTimestamp) {
+                out.writeInt(safeTimestamp);
+            }
+            out.writeBytes(payload, offset, firstPayload);
+            ctx.write(out);
 
-        int remaining = len - firstPayload;
-        offset += firstPayload;
+            int remaining = len - firstPayload;
+            offset += firstPayload;
 
-        while (remaining > 0) {
-            int toWrite = Math.min(remaining, chunkSize);
-            ByteBuf next = Unpooled.buffer(1 + toWrite);
-            next.writeByte(0xC0 | (csid & 0x3F)); // fmt=3, continuation chunk
-            next.writeBytes(payload, offset, toWrite);
-            ctx.write(next);
-            remaining -= toWrite;
-            offset += toWrite;
+            while (remaining > 0) {
+                int toWrite = Math.min(remaining, chunkSize);
+                ByteBuf next = Unpooled.buffer(1 + (extendedTimestamp ? 4 : 0) + toWrite);
+                next.writeByte(0xC0 | (csid & 0x3F)); // fmt=3, continuation chunk
+                if (extendedTimestamp) {
+                    next.writeInt(safeTimestamp);
+                }
+                next.writeBytes(payload, offset, toWrite);
+                ctx.write(next);
+                remaining -= toWrite;
+                offset += toWrite;
+            }
+
+            ctx.flush();
+        } finally {
+            ReferenceCountUtil.safeRelease(payload);
         }
-
-        ctx.flush();
     }
 }

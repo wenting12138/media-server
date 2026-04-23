@@ -53,6 +53,7 @@ public final class PublishedStream {
     }
     private final CopyOnWriteArrayList<RtmpSubscriber> rtmpSubscribers = new CopyOnWriteArrayList<RtmpSubscriber>();
     private volatile RtpUdpMediaPlane rtpUdpPlane;
+    private volatile ByteBuf rtmpMetadata;
     private volatile ByteBuf rtmpVideoSeqHeader;
     private volatile ByteBuf rtmpAudioSeqHeader;
     private final H264RtpDepacketizer h264 = new H264RtpDepacketizer();
@@ -109,6 +110,10 @@ public final class PublishedStream {
         }
         RtmpSubscriber sub = new RtmpSubscriber(ctx, messageStreamId);
         rtmpSubscribers.addIfAbsent(sub);
+        ByteBuf meta = rtmpMetadata;
+        if (meta != null && meta.isReadable()) {
+            RtmpWriter.writeData(ctx, messageStreamId, 0, meta.retainedDuplicate());
+        }
         ByteBuf vsh = rtmpVideoSeqHeader;
         if (vsh != null && vsh.isReadable()) {
             RtmpWriter.writeMedia(ctx, RtmpConstants.CSID_VIDEO, RtmpConstants.TYPE_VIDEO, messageStreamId, 0, vsh.retainedDuplicate());
@@ -207,6 +212,20 @@ public final class PublishedStream {
         maybeLogStats();
     }
 
+    public void onPublisherRtmpData(ByteBuf payload, int timestamp, int messageStreamId) {
+        publisherSession.touch();
+        cacheRtmpMetadata(payload);
+        relayRtmpToSubscribers(RtmpConstants.TYPE_DATA_AMF0, payload, timestamp, messageStreamId);
+    }
+
+    private void cacheRtmpMetadata(ByteBuf payload) {
+        if (!payload.isReadable()) {
+            return;
+        }
+        ReferenceCountUtil.safeRelease(rtmpMetadata);
+        rtmpMetadata = payload.retainedDuplicate();
+    }
+
     private void cacheRtmpSeqHeader(ByteBuf payload, boolean video) {
         if (!payload.isReadable()) {
             return;
@@ -236,6 +255,10 @@ public final class PublishedStream {
         for (RtmpSubscriber sub : snapshot) {
             if (sub == null || !sub.ctx.channel().isActive()) {
                 rtmpSubscribers.remove(sub);
+                continue;
+            }
+            if (typeId == RtmpConstants.TYPE_DATA_AMF0) {
+                RtmpWriter.writeData(sub.ctx, sub.messageStreamId, timestamp, payload.retainedDuplicate());
                 continue;
             }
             RtmpWriter.writeMedia(sub.ctx, typeId == RtmpConstants.TYPE_VIDEO ? RtmpConstants.CSID_VIDEO : RtmpConstants.CSID_AUDIO, typeId, sub.messageStreamId, timestamp, payload.retainedDuplicate());
@@ -331,8 +354,10 @@ public final class PublishedStream {
         rtmpSubscribers.clear();
         udpVideoSubscribers.clear();
         udpAudioSubscribers.clear();
+        ReferenceCountUtil.safeRelease(rtmpMetadata);
         ReferenceCountUtil.safeRelease(rtmpVideoSeqHeader);
         ReferenceCountUtil.safeRelease(rtmpAudioSeqHeader);
+        rtmpMetadata = null;
         rtmpVideoSeqHeader = null;
         rtmpAudioSeqHeader = null;
     }

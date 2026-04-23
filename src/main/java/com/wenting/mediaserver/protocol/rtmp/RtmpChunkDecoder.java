@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Map;
 
 final class RtmpChunkDecoder extends ByteToMessageDecoder {
+    private static final int EXTENDED_TIMESTAMP = 0xFFFFFF;
+    private static final int MAX_MESSAGE_LENGTH = 8 * 1024 * 1024;
     private final Map<Integer, HeaderState> headers = new HashMap<Integer, HeaderState>();
     private int inChunkSize = 128;
 
@@ -28,41 +30,95 @@ final class RtmpChunkDecoder extends ByteToMessageDecoder {
                 return; // MVP: no extended csid support
             }
             HeaderState hs = headers.get(Integer.valueOf(csid));
+            boolean allocatedNow = false;
             if (fmt == 0) {
                 if (in.readableBytes() < 11) {
                     in.resetReaderIndex();
                     return;
                 }
-                int ts = read24(in);
+                int tsField = read24(in);
                 int len = read24(in);
                 int typeId = in.readUnsignedByte();
                 int msid = readLittleEndianInt(in);
+                int ts = tsField;
+                boolean extendedTs = tsField == EXTENDED_TIMESTAMP;
+                if (extendedTs) {
+                    if (in.readableBytes() < 4) {
+                        in.resetReaderIndex();
+                        return;
+                    }
+                    ts = in.readInt();
+                }
+                if (len < 0 || len > MAX_MESSAGE_LENGTH) {
+                    ctx.close();
+                    return;
+                }
                 hs = new HeaderState(ts, len, typeId, msid);
+                hs.hasExtendedTimestamp = extendedTs;
+                hs.lastTimestampDelta = 0;
                 headers.put(Integer.valueOf(csid), hs);
                 hs.payload = Unpooled.buffer(len);
+                allocatedNow = true;
             } else if (fmt == 1) {
                 if (hs == null || in.readableBytes() < 7) {
                     in.resetReaderIndex();
                     return;
                 }
-                int delta = read24(in);
+                int deltaField = read24(in);
                 int len = read24(in);
                 int typeId = in.readUnsignedByte();
+                int delta = deltaField;
+                boolean extendedTs = deltaField == EXTENDED_TIMESTAMP;
+                if (extendedTs) {
+                    if (in.readableBytes() < 4) {
+                        in.resetReaderIndex();
+                        return;
+                    }
+                    delta = in.readInt();
+                }
+                if (len < 0 || len > MAX_MESSAGE_LENGTH) {
+                    ctx.close();
+                    return;
+                }
                 hs.timestamp = hs.timestamp + delta;
+                hs.lastTimestampDelta = delta;
+                hs.hasExtendedTimestamp = extendedTs;
                 hs.messageLength = len;
                 hs.typeId = typeId;
                 hs.payload = Unpooled.buffer(len);
+                allocatedNow = true;
             } else if (fmt == 2) {
                 if (hs == null || in.readableBytes() < 3) {
                     in.resetReaderIndex();
                     return;
                 }
-                int delta = read24(in);
+                int deltaField = read24(in);
+                int delta = deltaField;
+                boolean extendedTs = deltaField == EXTENDED_TIMESTAMP;
+                if (extendedTs) {
+                    if (in.readableBytes() < 4) {
+                        in.resetReaderIndex();
+                        return;
+                    }
+                    delta = in.readInt();
+                }
                 hs.timestamp = hs.timestamp + delta;
+                hs.lastTimestampDelta = delta;
+                hs.hasExtendedTimestamp = extendedTs;
                 hs.payload = Unpooled.buffer(hs.messageLength);
+                allocatedNow = true;
             } else if (fmt == 3 && hs != null) {
+                if (hs.hasExtendedTimestamp) {
+                    if (in.readableBytes() < 4) {
+                        in.resetReaderIndex();
+                        return;
+                    }
+                    in.skipBytes(4);
+                }
                 if (hs.payload == null) {
+                    hs.timestamp = hs.timestamp + hs.lastTimestampDelta;
                     hs.payload = Unpooled.buffer(hs.messageLength);
+                    allocatedNow = true;
                 }
             } else {
                 in.resetReaderIndex();
@@ -75,6 +131,10 @@ final class RtmpChunkDecoder extends ByteToMessageDecoder {
             int remaining = hs.messageLength - hs.payload.readableBytes();
             int toRead = Math.min(remaining, inChunkSize);
             if (in.readableBytes() < toRead) {
+                if (allocatedNow) {
+                    hs.payload.release();
+                    hs.payload = null;
+                }
                 in.resetReaderIndex();
                 return;
             }
@@ -125,6 +185,8 @@ final class RtmpChunkDecoder extends ByteToMessageDecoder {
         private int messageLength;
         private int typeId;
         private final int messageStreamId;
+        private int lastTimestampDelta;
+        private boolean hasExtendedTimestamp;
         private ByteBuf payload;
 
         private HeaderState(int timestamp, int messageLength, int typeId, int messageStreamId) {
