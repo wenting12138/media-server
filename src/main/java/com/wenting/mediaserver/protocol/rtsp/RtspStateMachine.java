@@ -184,18 +184,20 @@ final class RtspStateMachine {
             ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.BAD_REQUEST));
             return;
         }
-        Optional<PublishedStream> ps = registry.published(key);
+        Optional<PublishedStream> ps = registry.publishedForPlayback(key);
         if (!ps.isPresent()) {
             ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.NOT_FOUND));
             return;
         }
-        String sdp = ps.get().sdp();
+        PublishedStream stream = ps.get();
+        String sdp = stream.sdp();
         if (sdp == null || sdp.isEmpty()) {
             ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.NOT_FOUND));
             return;
         }
-        log.info("RTSP DESCRIBE {}, sdp=\r\n{}", key.path(), sdp);
-        session.setStreamKey(key);
+        StreamKey resolvedKey = stream.key();
+        log.info("RTSP DESCRIBE request={} resolved={} sdp=\r\n{}", key.path(), resolvedKey.path(), sdp);
+        session.setStreamKey(resolvedKey);
         if (state == RtspFsmState.IDLE) {
             state = RtspFsmState.SUBSCRIBER_NEGOTIATING;
         }
@@ -391,12 +393,13 @@ final class RtspStateMachine {
             ctx.writeAndFlush(RtspResponses.error(cseq, SESSION_NOT_FOUND));
             return;
         }
-        Optional<PublishedStream> ps = registry.published(session.streamKey());
+        Optional<PublishedStream> ps = registry.publishedForPlayback(session.streamKey());
         if (!ps.isPresent()) {
             ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.NOT_FOUND));
             return;
         }
         PublishedStream stream = ps.get();
+        session.setStreamKey(stream.key());
         session.setSubscribedStream(stream);
         stream.attachRtpUdpMediaPlane(rtpUdp);
         if (session.rtpTransportMode() == RtpTransportMode.TCP_INTERLEAVED) {

@@ -193,12 +193,13 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
             return;
         }
         StreamKey key = toStreamKey(session.app(), streamName);
-        Optional<PublishedStream> published = registry.published(key);
+        Optional<PublishedStream> published = registry.publishedForPlayback(key);
         if (!published.isPresent()) {
             sendOnStatus(ctx, messageStreamId, "error", "NetStream.Play.StreamNotFound", "stream not found");
             return;
         }
         PublishedStream stream = published.get();
+        StreamKey resolvedKey = stream.key();
         int msid = messageStreamId <= 0 ? 1 : messageStreamId;
 
         RtmpWriter.writeStreamBegin(ctx, msid);
@@ -212,7 +213,7 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
         stream.addRtmpSubscriber(ctx, msid);
         sendOnStatus(ctx, msid, "status", "NetStream.Play.Start", "play started");
         RtmpWriter.writeSampleAccess(ctx, msid);
-        log.info("RTMP play start {}", key.path());
+        log.info("RTMP play start request={} resolved={}", key.path(), resolvedKey.path());
     }
 
     private void onFCPublish(ChannelHandlerContext ctx, RtmpSession session, double txn, ByteBuf payload) {

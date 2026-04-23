@@ -2,9 +2,11 @@ package com.wenting.mediaserver.core.publish;
 
 import com.wenting.mediaserver.core.model.MediaSession;
 import com.wenting.mediaserver.core.model.StreamKey;
+import com.wenting.mediaserver.core.transcode.StreamFrameProcessor;
 import com.wenting.mediaserver.protocol.rtp.H264RtpDepacketizer;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import com.wenting.mediaserver.protocol.rtmp.RtmpConstants;
+import com.wenting.mediaserver.protocol.rtmp.RtmpMediaPacket;
 import com.wenting.mediaserver.protocol.rtmp.RtmpWriter;
 import com.wenting.mediaserver.protocol.rtsp.RtspInterleavedWriter;
 import io.netty.buffer.ByteBuf;
@@ -30,6 +32,8 @@ public final class PublishedStream {
 
     private final StreamKey key;
     private final MediaSession publisherSession;
+    private final StreamFrameProcessor frameProcessor;
+    private volatile boolean frameProcessorStarted;
     private volatile String sdp;
     private volatile Channel publisherChannel;
     private final CopyOnWriteArrayList<Channel> subscribers = new CopyOnWriteArrayList<Channel>();
@@ -72,9 +76,18 @@ public final class PublishedStream {
     private final AtomicLong rtmpDroppedPackets = new AtomicLong();
     private volatile long statsLogAtMs = System.currentTimeMillis();
 
-    public PublishedStream(StreamKey key, MediaSession publisherSession) {
+    public PublishedStream(StreamKey key, MediaSession publisherSession, StreamFrameProcessor frameProcessor) {
         this.key = key;
         this.publisherSession = publisherSession;
+        this.frameProcessor = frameProcessor == null ? StreamFrameProcessor.NOOP : frameProcessor;
+    }
+
+    public void markPublishStarted() {
+        if (frameProcessorStarted) {
+            return;
+        }
+        frameProcessorStarted = true;
+        frameProcessor.onPublishStart(key, sdp);
     }
 
     public StreamKey key() {
@@ -198,6 +211,7 @@ public final class PublishedStream {
         int bytes = payload.readableBytes();
         videoInPackets.incrementAndGet();
         videoInBytes.addAndGet(bytes);
+        processRtmpPacket(RtmpMediaPacket.Kind.VIDEO, RtmpConstants.TYPE_VIDEO, timestamp, messageStreamId, payload);
         cacheRtmpSeqHeader(payload, true);
         relayRtmpToSubscribers(RtmpConstants.TYPE_VIDEO, payload, timestamp, messageStreamId);
         maybeLogStats();
@@ -208,6 +222,7 @@ public final class PublishedStream {
         int bytes = payload.readableBytes();
         audioInPackets.incrementAndGet();
         audioInBytes.addAndGet(bytes);
+        processRtmpPacket(RtmpMediaPacket.Kind.AUDIO, RtmpConstants.TYPE_AUDIO, timestamp, messageStreamId, payload);
         cacheRtmpSeqHeader(payload, false);
         relayRtmpToSubscribers(RtmpConstants.TYPE_AUDIO, payload, timestamp, messageStreamId);
         maybeLogStats();
@@ -215,8 +230,26 @@ public final class PublishedStream {
 
     public void onPublisherRtmpData(ByteBuf payload, int timestamp, int messageStreamId) {
         publisherSession.touch();
+        processRtmpPacket(RtmpMediaPacket.Kind.DATA, RtmpConstants.TYPE_DATA_AMF0, timestamp, messageStreamId, payload);
         cacheRtmpMetadata(payload);
         relayRtmpToSubscribers(RtmpConstants.TYPE_DATA_AMF0, payload, timestamp, messageStreamId);
+    }
+
+    private void processRtmpPacket(RtmpMediaPacket.Kind kind, int typeId, int timestamp, int messageStreamId, ByteBuf payload) {
+        if (payload == null || !payload.isReadable()) {
+            return;
+        }
+        RtmpMediaPacket packet = new RtmpMediaPacket(
+                kind,
+                typeId,
+                timestamp,
+                messageStreamId <= 0 ? 1 : messageStreamId,
+                payload.retainedDuplicate());
+        try {
+            frameProcessor.onRtmpPacket(key, packet);
+        } finally {
+            packet.release();
+        }
     }
 
     private void cacheRtmpMetadata(ByteBuf payload) {
@@ -258,7 +291,7 @@ public final class PublishedStream {
                 rtmpSubscribers.remove(sub);
                 continue;
             }
-            if (!sub.ctx.channel().isWritable()) {
+            if (!sub.ctx.channel().isWritable() && shouldDropForBackpressure(typeId, payload)) {
                 rtmpDroppedPackets.incrementAndGet();
                 continue;
             }
@@ -275,6 +308,20 @@ public final class PublishedStream {
                 audioOutTcpBytes.addAndGet(payload.readableBytes());
             }
         }
+    }
+
+    private boolean shouldDropForBackpressure(int typeId, ByteBuf payload) {
+        if (typeId != RtmpConstants.TYPE_VIDEO) {
+            return false;
+        }
+        if (payload == null || payload.readableBytes() < 2) {
+            return false;
+        }
+        int frameType = (payload.getUnsignedByte(payload.readerIndex()) >> 4) & 0x0F;
+        int avcPacketType = payload.getUnsignedByte(payload.readerIndex() + 1);
+        boolean keyFrame = frameType == 1;
+        boolean sequenceHeader = avcPacketType == 0;
+        return !keyFrame && !sequenceHeader;
     }
 
     private void relayRtp(
@@ -352,6 +399,10 @@ public final class PublishedStream {
     }
 
     public void shutdown() {
+        if (frameProcessorStarted) {
+            frameProcessor.onPublishStop(key);
+            frameProcessorStarted = false;
+        }
         h264.reset();
         for (Channel ch : subscribers) {
             ch.close();

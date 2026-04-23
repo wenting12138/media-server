@@ -10,19 +10,62 @@ public final class MediaServerConfig {
     private static final int DEFAULT_RTMP = 11935;
     private static final int DEFAULT_RTP_PORT_MIN = 20000;
     private static final int DEFAULT_RTP_PORT_MAX = 30000;
+    private static final boolean DEFAULT_TRANSCODE_ENABLED = true;
+    private static final String DEFAULT_FFMPEG_BIN = "ffmpeg";
+    private static final String DEFAULT_TRANSCODE_OUTPUT_SUFFIX = "__wm";
+    private static final String DEFAULT_TRANSCODE_INPUT_HOST = "127.0.0.1";
+    private static final int DEFAULT_TRANSCODE_QUEUE_SIZE = 2048;
 
     private final int httpPort;
     private final int rtspPort;
     private final int rtmpPort;
     private final int rtpPortMin;
     private final int rtpPortMax;
+    private final boolean transcodeEnabled;
+    private final String ffmpegBin;
+    private final String transcodeOutputSuffix;
+    private final String transcodeInputHost;
+    private final int transcodeQueueSize;
 
     public MediaServerConfig(int httpPort, int rtspPort, int rtmpPort, int rtpPortMin, int rtpPortMax) {
+        this(
+                httpPort,
+                rtspPort,
+                rtmpPort,
+                rtpPortMin,
+                rtpPortMax,
+                DEFAULT_TRANSCODE_ENABLED,
+                DEFAULT_FFMPEG_BIN,
+                DEFAULT_TRANSCODE_OUTPUT_SUFFIX,
+                DEFAULT_TRANSCODE_INPUT_HOST,
+                DEFAULT_TRANSCODE_QUEUE_SIZE);
+    }
+
+    public MediaServerConfig(
+            int httpPort,
+            int rtspPort,
+            int rtmpPort,
+            int rtpPortMin,
+            int rtpPortMax,
+            boolean transcodeEnabled,
+            String ffmpegBin,
+            String transcodeOutputSuffix,
+            String transcodeInputHost,
+            int transcodeQueueSize) {
         this.httpPort = httpPort;
         this.rtspPort = rtspPort;
         this.rtmpPort = rtmpPort;
         this.rtpPortMin = rtpPortMin;
         this.rtpPortMax = rtpPortMax;
+        this.transcodeEnabled = transcodeEnabled;
+        this.ffmpegBin = ffmpegBin == null || ffmpegBin.trim().isEmpty() ? DEFAULT_FFMPEG_BIN : ffmpegBin.trim();
+        this.transcodeOutputSuffix = transcodeOutputSuffix == null || transcodeOutputSuffix.trim().isEmpty()
+                ? DEFAULT_TRANSCODE_OUTPUT_SUFFIX
+                : transcodeOutputSuffix.trim();
+        this.transcodeInputHost = transcodeInputHost == null || transcodeInputHost.trim().isEmpty()
+                ? DEFAULT_TRANSCODE_INPUT_HOST
+                : transcodeInputHost.trim();
+        this.transcodeQueueSize = transcodeQueueSize <= 0 ? DEFAULT_TRANSCODE_QUEUE_SIZE : transcodeQueueSize;
     }
 
     public static MediaServerConfig fromEnvironment() {
@@ -40,7 +83,22 @@ public final class MediaServerConfig {
             rtpMin = DEFAULT_RTP_PORT_MIN;
             rtpMax = DEFAULT_RTP_PORT_MAX;
         }
-        return new MediaServerConfig(http, rtsp, rtmp, rtpMin, rtpMax);
+        boolean transcodeEnabled = parseBoolean(System.getenv("MEDIA_TRANSCODE_ENABLED"), DEFAULT_TRANSCODE_ENABLED);
+        String ffmpegBin = parseString(System.getenv("MEDIA_FFMPEG_BIN"), DEFAULT_FFMPEG_BIN);
+        String suffix = parseString(System.getenv("MEDIA_TRANSCODE_SUFFIX"), DEFAULT_TRANSCODE_OUTPUT_SUFFIX);
+        String inputHost = parseString(System.getenv("MEDIA_TRANSCODE_INPUT_HOST"), DEFAULT_TRANSCODE_INPUT_HOST);
+        int queueSize = parsePositiveInt(System.getenv("MEDIA_TRANSCODE_QUEUE_SIZE"), DEFAULT_TRANSCODE_QUEUE_SIZE);
+        return new MediaServerConfig(
+                http,
+                rtsp,
+                rtmp,
+                rtpMin,
+                rtpMax,
+                transcodeEnabled,
+                ffmpegBin,
+                suffix,
+                inputHost,
+                queueSize);
     }
 
     private static int parsePort(String raw, int fallback) {
@@ -56,6 +114,39 @@ public final class MediaServerConfig {
         } catch (NumberFormatException e) {
             return fallback;
         }
+    }
+
+    private static int parsePositiveInt(String raw, int fallback) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return fallback;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value > 0 ? value : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static boolean parseBoolean(String raw, boolean fallback) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return fallback;
+        }
+        String v = raw.trim().toLowerCase();
+        if ("1".equals(v) || "true".equals(v) || "yes".equals(v) || "on".equals(v)) {
+            return true;
+        }
+        if ("0".equals(v) || "false".equals(v) || "no".equals(v) || "off".equals(v)) {
+            return false;
+        }
+        return fallback;
+    }
+
+    private static String parseString(String raw, String fallback) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return fallback;
+        }
+        return raw.trim();
     }
 
     public int httpPort() {
@@ -76,6 +167,26 @@ public final class MediaServerConfig {
 
     public int rtpPortMax() {
         return rtpPortMax;
+    }
+
+    public boolean transcodeEnabled() {
+        return transcodeEnabled;
+    }
+
+    public String ffmpegBin() {
+        return ffmpegBin;
+    }
+
+    public String transcodeOutputSuffix() {
+        return transcodeOutputSuffix;
+    }
+
+    public String transcodeInputHost() {
+        return transcodeInputHost;
+    }
+
+    public int transcodeQueueSize() {
+        return transcodeQueueSize;
     }
 
     public String version() {

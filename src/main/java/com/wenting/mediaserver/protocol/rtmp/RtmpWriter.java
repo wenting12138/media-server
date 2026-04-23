@@ -76,8 +76,9 @@ public final class RtmpWriter {
             boolean extendedTimestamp = safeTimestamp >= 0xFFFFFF;
 
             int firstPayload = Math.min(len, chunkSize);
-            ByteBuf out = Unpooled.buffer(1 + 11 + (extendedTimestamp ? 4 : 0) + firstPayload);
-            out.writeByte(csid & 0x3F); // fmt=0, full message header
+            int basicHeaderSize = basicHeaderLength(csid);
+            ByteBuf out = Unpooled.buffer(basicHeaderSize + 11 + (extendedTimestamp ? 4 : 0) + firstPayload);
+            writeBasicHeader(out, 0, csid); // fmt=0, full message header
             RtmpChunkDecoder.write24(out, extendedTimestamp ? 0xFFFFFF : safeTimestamp);
             RtmpChunkDecoder.write24(out, len);
             out.writeByte(typeId & 0xFF);
@@ -93,8 +94,8 @@ public final class RtmpWriter {
 
             while (remaining > 0) {
                 int toWrite = Math.min(remaining, chunkSize);
-                ByteBuf next = Unpooled.buffer(1 + (extendedTimestamp ? 4 : 0) + toWrite);
-                next.writeByte(0xC0 | (csid & 0x3F)); // fmt=3, continuation chunk
+                ByteBuf next = Unpooled.buffer(basicHeaderSize + (extendedTimestamp ? 4 : 0) + toWrite);
+                writeBasicHeader(next, 3, csid); // fmt=3, continuation chunk
                 if (extendedTimestamp) {
                     next.writeInt(safeTimestamp);
                 }
@@ -108,6 +109,33 @@ public final class RtmpWriter {
         } finally {
             ReferenceCountUtil.safeRelease(payload);
         }
+    }
+
+    private static int basicHeaderLength(int csid) {
+        if (csid >= 2 && csid <= 63) {
+            return 1;
+        }
+        if (csid >= 64 && csid <= 319) {
+            return 2;
+        }
+        return 3;
+    }
+
+    private static void writeBasicHeader(ByteBuf out, int fmt, int csid) {
+        int fmtBits = (fmt & 0x03) << 6;
+        if (csid >= 2 && csid <= 63) {
+            out.writeByte(fmtBits | csid);
+            return;
+        }
+        if (csid >= 64 && csid <= 319) {
+            out.writeByte(fmtBits);
+            out.writeByte(csid - 64);
+            return;
+        }
+        int adjusted = csid - 64;
+        out.writeByte(fmtBits | 1);
+        out.writeByte(adjusted & 0xFF);
+        out.writeByte((adjusted >> 8) & 0xFF);
     }
 
     private static void requestFlush(ChannelHandlerContext ctx) {

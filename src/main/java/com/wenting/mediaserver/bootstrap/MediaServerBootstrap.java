@@ -3,6 +3,7 @@ package com.wenting.mediaserver.bootstrap;
 import com.wenting.mediaserver.api.HttpJsonApiHandler;
 import com.wenting.mediaserver.config.MediaServerConfig;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
+import com.wenting.mediaserver.core.transcode.FfmpegTranscodeProcessor;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import com.wenting.mediaserver.protocol.rtmp.RtmpChannelInitializer;
 import com.wenting.mediaserver.protocol.rtsp.RtspChannelInitializer;
@@ -34,7 +35,8 @@ public final class MediaServerBootstrap implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(MediaServerBootstrap.class);
 
     private final MediaServerConfig config;
-    private final StreamRegistry registry = new StreamRegistry();
+    private final FfmpegTranscodeProcessor transcodeProcessor;
+    private final StreamRegistry registry;
     private final EventLoopGroup boss = new NioEventLoopGroup(1);
     private final EventLoopGroup worker = new NioEventLoopGroup();
     private final RtpUdpMediaPlane rtpUdpPlane;
@@ -42,6 +44,8 @@ public final class MediaServerBootstrap implements AutoCloseable {
 
     public MediaServerBootstrap(MediaServerConfig config) {
         this.config = config;
+        this.transcodeProcessor = new FfmpegTranscodeProcessor(config);
+        this.registry = new StreamRegistry(transcodeProcessor, config.transcodeOutputSuffix());
         this.rtpUdpPlane = new RtpUdpMediaPlane(worker, config.rtpPortMin(), config.rtpPortMax());
     }
 
@@ -100,6 +104,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
         for (Channel ch : channels) {
             ch.close();
         }
+        transcodeProcessor.close();
         rtpUdpPlane.close();
         worker.shutdownGracefully();
         boss.shutdownGracefully();
