@@ -47,6 +47,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
         this.config = config;
         this.transcodeDispatcher = new StreamTranscodeDispatcher(StreamTranscoderFactory.create(config));
         this.registry = new StreamRegistry(transcodeDispatcher, config.transcodeOutputSuffix());
+        this.transcodeDispatcher.bindRegistry(this.registry);
         this.rtpUdpPlane = new RtpUdpMediaPlane(worker, config.rtpPortMin(), config.rtpPortMax());
     }
 

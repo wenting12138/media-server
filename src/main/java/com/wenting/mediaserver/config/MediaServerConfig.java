@@ -15,7 +15,8 @@ public final class MediaServerConfig {
     private static final String DEFAULT_TRANSCODE_OUTPUT_SUFFIX = "__wm";
     private static final String DEFAULT_TRANSCODE_INPUT_HOST = "127.0.0.1";
     private static final int DEFAULT_TRANSCODE_QUEUE_SIZE = 2048;
-    private static final String DEFAULT_RTMP_TRANSCODER = "ffmpeg";
+    private static final String DEFAULT_RTMP_TRANSCODER = "java";
+    private static final boolean DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED = true;
 
     private final int httpPort;
     private final int rtspPort;
@@ -28,6 +29,7 @@ public final class MediaServerConfig {
     private final String transcodeInputHost;
     private final int transcodeQueueSize;
     private final String rtmpTranscoder;
+    private final boolean javaVisibleWatermarkEnabled;
 
     public MediaServerConfig(int httpPort, int rtspPort, int rtmpPort, int rtpPortMin, int rtpPortMax) {
         this(
@@ -41,7 +43,8 @@ public final class MediaServerConfig {
                 DEFAULT_TRANSCODE_OUTPUT_SUFFIX,
                 DEFAULT_TRANSCODE_INPUT_HOST,
                 DEFAULT_TRANSCODE_QUEUE_SIZE,
-                DEFAULT_RTMP_TRANSCODER);
+                DEFAULT_RTMP_TRANSCODER,
+                DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED);
     }
 
     public MediaServerConfig(
@@ -56,6 +59,34 @@ public final class MediaServerConfig {
             String transcodeInputHost,
             int transcodeQueueSize,
             String rtmpTranscoder) {
+        this(
+                httpPort,
+                rtspPort,
+                rtmpPort,
+                rtpPortMin,
+                rtpPortMax,
+                transcodeEnabled,
+                ffmpegBin,
+                transcodeOutputSuffix,
+                transcodeInputHost,
+                transcodeQueueSize,
+                rtmpTranscoder,
+                DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED);
+    }
+
+    public MediaServerConfig(
+            int httpPort,
+            int rtspPort,
+            int rtmpPort,
+            int rtpPortMin,
+            int rtpPortMax,
+            boolean transcodeEnabled,
+            String ffmpegBin,
+            String transcodeOutputSuffix,
+            String transcodeInputHost,
+            int transcodeQueueSize,
+            String rtmpTranscoder,
+            boolean javaVisibleWatermarkEnabled) {
         this.httpPort = httpPort;
         this.rtspPort = rtspPort;
         this.rtmpPort = rtmpPort;
@@ -73,6 +104,7 @@ public final class MediaServerConfig {
         this.rtmpTranscoder = rtmpTranscoder == null || rtmpTranscoder.trim().isEmpty()
                 ? DEFAULT_RTMP_TRANSCODER
                 : rtmpTranscoder.trim();
+        this.javaVisibleWatermarkEnabled = javaVisibleWatermarkEnabled;
     }
 
     public static MediaServerConfig fromEnvironment() {
@@ -96,6 +128,9 @@ public final class MediaServerConfig {
         String inputHost = parseString(System.getenv("MEDIA_TRANSCODE_INPUT_HOST"), DEFAULT_TRANSCODE_INPUT_HOST);
         int queueSize = parsePositiveInt(System.getenv("MEDIA_TRANSCODE_QUEUE_SIZE"), DEFAULT_TRANSCODE_QUEUE_SIZE);
         String rtmpTranscoder = parseString(System.getenv("MEDIA_RTMP_TRANSCODER"), DEFAULT_RTMP_TRANSCODER);
+        boolean javaVisibleWatermarkEnabled = parseBoolean(
+                System.getenv("MEDIA_JAVA_VISIBLE_WATERMARK_ENABLED"),
+                DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED);
         return new MediaServerConfig(
                 http,
                 rtsp,
@@ -107,7 +142,8 @@ public final class MediaServerConfig {
                 suffix,
                 inputHost,
                 queueSize,
-                rtmpTranscoder);
+                rtmpTranscoder,
+                javaVisibleWatermarkEnabled);
     }
 
     private static int parsePort(String raw, int fallback) {
@@ -200,6 +236,10 @@ public final class MediaServerConfig {
 
     public String rtmpTranscoder() {
         return rtmpTranscoder;
+    }
+
+    public boolean javaVisibleWatermarkEnabled() {
+        return javaVisibleWatermarkEnabled;
     }
 
     public String version() {

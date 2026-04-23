@@ -14,6 +14,9 @@ public final class StreamTranscoderFactory {
         if ("ffmpeg".equalsIgnoreCase(name)) {
             return new FfmpegTranscodeProcessor(config);
         }
+        if ("java".equalsIgnoreCase(name) || "purejava".equalsIgnoreCase(name)) {
+            return new JavaStreamTranscoder(config);
+        }
         if ("noop".equalsIgnoreCase(name)) {
             return new NoopStreamTranscoder();
         }

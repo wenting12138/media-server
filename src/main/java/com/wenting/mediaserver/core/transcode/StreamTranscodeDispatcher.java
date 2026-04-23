@@ -1,6 +1,7 @@
 package com.wenting.mediaserver.core.transcode;
 
 import com.wenting.mediaserver.core.model.StreamKey;
+import com.wenting.mediaserver.core.registry.StreamRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,6 +21,10 @@ public final class StreamTranscodeDispatcher implements StreamFrameProcessor, Au
     public StreamTranscodeDispatcher(StreamTranscoder transcoder) {
         this.transcoder = transcoder == null ? new NoopStreamTranscoder() : transcoder;
         log.info("Stream transcoder selected: {}", this.transcoder.name());
+    }
+
+    public void bindRegistry(StreamRegistry registry) {
+        transcoder.bindRegistry(registry);
     }
 
     @Override
