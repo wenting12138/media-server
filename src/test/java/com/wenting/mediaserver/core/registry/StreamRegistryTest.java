@@ -1,6 +1,7 @@
 package com.wenting.mediaserver.core.registry;
 
 import com.wenting.mediaserver.core.model.StreamKey;
+import com.wenting.mediaserver.core.model.StreamProtocol;
 import com.wenting.mediaserver.core.publish.PublishedStream;
 import com.wenting.mediaserver.core.transcode.StreamFrameProcessor;
 import com.wenting.mediaserver.core.transcode.EncodedMediaPacket;
@@ -92,5 +93,21 @@ class StreamRegistryTest {
 
         r.unpublish(original, originalPs.publisherSession().id());
         r.unpublish(derived, derivedPs.publisherSession().id());
+    }
+
+    @Test
+    void playbackFallsBackAcrossProtocols() {
+        StreamRegistry r = new StreamRegistry();
+        EmbeddedChannel ch = new EmbeddedChannel();
+        StreamKey rtmpDerived = new StreamKey(StreamProtocol.RTMP, "live", "cam5__wm");
+        StreamKey rtspRequest = new StreamKey(StreamProtocol.RTSP, "live", "cam5");
+
+        PublishedStream derivedPs = r.tryPublish(rtmpDerived, null, "v=0\r\n", ch).get();
+        PublishedStream resolved = r.publishedForPlayback(rtspRequest).orElse(null);
+
+        assertTrue(resolved != null);
+        assertEquals(derivedPs.key(), resolved.key());
+
+        r.unpublish(rtmpDerived, derivedPs.publisherSession().id());
     }
 }

@@ -7,10 +7,12 @@ import java.util.Objects;
  */
 public final class StreamKey {
 
+    private final StreamProtocol protocol;
     private final String app;
     private final String stream;
 
-    public StreamKey(String app, String stream) {
+    public StreamKey(StreamProtocol protocol, String app, String stream) {
+        this.protocol = protocol == null ? StreamProtocol.UNKNOWN : protocol;
         Objects.requireNonNull(app, "app");
         Objects.requireNonNull(stream, "stream");
         if (app.trim().isEmpty() || stream.trim().isEmpty()) {
@@ -18,6 +20,14 @@ public final class StreamKey {
         }
         this.app = app;
         this.stream = stream;
+    }
+
+    public StreamKey(String app, String stream) {
+        this(StreamProtocol.UNKNOWN, app, stream);
+    }
+
+    public StreamProtocol protocol() {
+        return protocol;
     }
 
     public String app() {
@@ -41,16 +51,18 @@ public final class StreamKey {
             return false;
         }
         StreamKey streamKey = (StreamKey) o;
-        return app.equals(streamKey.app) && stream.equals(streamKey.stream);
+        return protocol == streamKey.protocol
+                && app.equals(streamKey.app)
+                && stream.equals(streamKey.stream);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(app, stream);
+        return Objects.hash(protocol, app, stream);
     }
 
     @Override
     public String toString() {
-        return path();
+        return protocol.name().toLowerCase() + ":" + path();
     }
 }

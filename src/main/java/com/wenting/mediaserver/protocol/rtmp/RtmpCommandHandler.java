@@ -1,6 +1,7 @@
 package com.wenting.mediaserver.protocol.rtmp;
 
 import com.wenting.mediaserver.core.model.StreamKey;
+import com.wenting.mediaserver.core.model.StreamProtocol;
 import com.wenting.mediaserver.core.publish.PublishedStream;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
 import io.netty.buffer.ByteBuf;
@@ -307,7 +308,7 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
         if (slash >= 0 && slash < streamName.length() - 1) {
             stream = streamName.substring(slash + 1);
         }
-        return new StreamKey(app, stream);
+        return new StreamKey(StreamProtocol.RTMP, app, stream);
     }
 
     private void sendOnStatus(ChannelHandlerContext ctx, int messageStreamId, String level, String code, String desc) {

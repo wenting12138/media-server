@@ -76,7 +76,7 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
             log.warn("Java transcoder registry not bound, skip start for {}", sourceKey.path());
             return;
         }
-        StreamKey derivedKey = new StreamKey(sourceKey.app(), sourceKey.stream() + outputSuffix);
+        StreamKey derivedKey = new StreamKey(sourceKey.protocol(), sourceKey.app(), sourceKey.stream() + outputSuffix);
         String sid = "java-transcode-" + UUID.randomUUID().toString().replace("-", "");
         Optional<PublishedStream> published = localRegistry.tryPublish(derivedKey, sid, context.sdpText(), null);
         if (!published.isPresent()) {

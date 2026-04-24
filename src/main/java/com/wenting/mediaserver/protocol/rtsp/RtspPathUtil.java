@@ -1,6 +1,7 @@
 package com.wenting.mediaserver.protocol.rtsp;
 
 import com.wenting.mediaserver.core.model.StreamKey;
+import com.wenting.mediaserver.core.model.StreamProtocol;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -37,7 +38,7 @@ public final class RtspPathUtil {
         if (segs.size() < 2) {
             throw new IllegalArgumentException("path must contain app/stream, was: " + path);
         }
-        return new StreamKey(segs.get(0), segs.get(1));
+        return new StreamKey(StreamProtocol.RTSP, segs.get(0), segs.get(1));
     }
 
     /**
