@@ -266,6 +266,7 @@ final class RtmpCommandHandler extends SimpleChannelInboundHandler<RtmpMessage> 
                 log.info("RTMP publish stop {}", key.path());
             }
         }
+        log.info("RTMP play stop {}", session.playingStream().key().path());
         PublishedStream playing = session.playingStream();
         if (playing != null) {
             playing.removeRtmpSubscriber(ctx);
