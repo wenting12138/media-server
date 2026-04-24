@@ -172,6 +172,13 @@ public final class PublishedStream {
         }
     }
 
+    public boolean hasAnySubscriber() {
+        return !subscribers.isEmpty()
+                || !udpVideoSubscribers.isEmpty()
+                || !udpAudioSubscribers.isEmpty()
+                || !rtmpSubscribers.isEmpty();
+    }
+
     /**
      * Invoked for each complete RTP packet (including header) on the publisher's video RTP interleave channel.
      */

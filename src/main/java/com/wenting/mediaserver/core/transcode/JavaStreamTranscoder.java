@@ -101,6 +101,10 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
         ByteBuf payload = packet.payload().retainedDuplicate();
         ByteBuf transformed = payload;
         try {
+            if (!handle.stream.hasAnySubscriber()) {
+                relayBootstrapWhenNoSubscriber(sourceKey, handle.stream, packet, payload);
+                return;
+            }
             if (packet.payloadFormat() == EncodedMediaPacket.PayloadFormat.RTMP_TAG) {
                 transformed = transformRtmpPacket(sourceKey, packet, payload);
                 if (packet.trackType() == EncodedMediaPacket.TrackType.VIDEO
@@ -365,6 +369,58 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
             tail.release();
         }
         normalizer.close();
+    }
+
+    private void relayBootstrapWhenNoSubscriber(
+            StreamKey sourceKey,
+            PublishedStream target,
+            EncodedMediaPacket packet,
+            ByteBuf payload) {
+        if (packet.payloadFormat() != EncodedMediaPacket.PayloadFormat.RTMP_TAG) {
+            return;
+        }
+        if (packet.trackType() == EncodedMediaPacket.TrackType.DATA) {
+            relayRtmp(target, packet.trackType(), payload, packet.timestamp(), packet.messageStreamId());
+            return;
+        }
+        if (packet.trackType() == EncodedMediaPacket.TrackType.VIDEO
+                && packet.codecType() == EncodedMediaPacket.CodecType.H264
+                && isRtmpVideoSequenceHeader(payload)) {
+            ByteBuf maybeTransformed = transformRtmpPacket(sourceKey, packet, payload);
+            try {
+                relayRtmp(target, packet.trackType(), maybeTransformed, packet.timestamp(), packet.messageStreamId());
+            } finally {
+                if (maybeTransformed != payload) {
+                    ReferenceCountUtil.safeRelease(maybeTransformed);
+                }
+            }
+            return;
+        }
+        if (packet.trackType() == EncodedMediaPacket.TrackType.AUDIO
+                && packet.codecType() == EncodedMediaPacket.CodecType.AAC
+                && isRtmpAacSequenceHeader(payload)) {
+            relayRtmp(target, packet.trackType(), payload, packet.timestamp(), packet.messageStreamId());
+        }
+    }
+
+    private static boolean isRtmpVideoSequenceHeader(ByteBuf payload) {
+        if (payload == null || payload.readableBytes() < 2) {
+            return false;
+        }
+        int ri = payload.readerIndex();
+        int codecId = payload.getUnsignedByte(ri) & 0x0F;
+        int avcPacketType = payload.getUnsignedByte(ri + 1);
+        return codecId == 7 && avcPacketType == 0;
+    }
+
+    private static boolean isRtmpAacSequenceHeader(ByteBuf payload) {
+        if (payload == null || payload.readableBytes() < 2) {
+            return false;
+        }
+        int ri = payload.readerIndex();
+        int soundFormat = (payload.getUnsignedByte(ri) >> 4) & 0x0F;
+        int aacPacketType = payload.getUnsignedByte(ri + 1);
+        return soundFormat == 10 && aacPacketType == 0;
     }
 
     private void seedRtpH264ParameterSetsFromSdp(PublishContext context) {
