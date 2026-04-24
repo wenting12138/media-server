@@ -24,12 +24,16 @@ public final class H264RtpPacketizer {
     private final AtomicInteger sequenceNumber = new AtomicInteger(0);
 
     public void packetize(ByteBuf nalUnit, int timestamp90khz, Consumer<ByteBuf> onRtp) {
+        packetize(nalUnit, timestamp90khz, true, onRtp);
+    }
+
+    public void packetize(ByteBuf nalUnit, int timestamp90khz, boolean markerForAccessUnitEnd, Consumer<ByteBuf> onRtp) {
         if (nalUnit == null || !nalUnit.isReadable()) {
             return;
         }
         int nalLen = nalUnit.readableBytes();
         if (nalLen <= MAX_RTP_PAYLOAD) {
-            ByteBuf rtp = createRtpHeader(timestamp90khz, true, nalLen);
+            ByteBuf rtp = createRtpHeader(timestamp90khz, markerForAccessUnitEnd, nalLen);
             rtp.writeBytes(nalUnit);
             onRtp.accept(rtp);
         } else {
@@ -49,7 +53,7 @@ public final class H264RtpPacketizer {
                 if (last) {
                     fuHeader |= 0x40;
                 }
-                ByteBuf rtp = createRtpHeader(timestamp90khz, last, chunk + 2);
+                ByteBuf rtp = createRtpHeader(timestamp90khz, markerForAccessUnitEnd && last, chunk + 2);
                 rtp.writeByte(fuIndicator);
                 rtp.writeByte(fuHeader);
                 rtp.writeBytes(nalUnit, offset, chunk);

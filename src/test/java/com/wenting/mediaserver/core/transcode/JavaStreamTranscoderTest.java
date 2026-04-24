@@ -29,7 +29,8 @@ class JavaStreamTranscoderTest {
                 "__wm",
                 "127.0.0.1",
                 1024,
-                "java");
+                "java",
+                false);
         StreamTranscodeDispatcher dispatcher = new StreamTranscodeDispatcher(StreamTranscoderFactory.create(config));
         StreamRegistry registry = new StreamRegistry(dispatcher, config.transcodeOutputSuffix());
         dispatcher.bindRegistry(registry);
@@ -48,7 +49,7 @@ class JavaStreamTranscoderTest {
         derivedStream.addSubscriber(rtspSubscriber);
 
         ByteBuf rtp = Unpooled.wrappedBuffer(new byte[]{
-                (byte) 0x80, (byte) 0x60, 0x00, 0x01,
+                (byte) 0x80, (byte) 0xE0, 0x00, 0x01,
                 0x00, 0x00, 0x00, 0x01,
                 0x00, 0x00, 0x00, 0x01,
                 0x65, 0x01, 0x02, 0x03

@@ -193,6 +193,22 @@ final class RtspStateMachine {
         PublishedStream stream = ps.get();
         String sdp = stream.sdp();
         if (sdp == null || sdp.isEmpty()) {
+            if (!key.stream().endsWith("__wm")) {
+                Optional<PublishedStream> original = registry.published(key);
+                if (original.isPresent()) {
+                    PublishedStream fallback = original.get();
+                    String fallbackSdp = fallback.sdp();
+                    if (fallbackSdp != null && !fallbackSdp.isEmpty()) {
+                        log.info("RTSP DESCRIBE fallback request={} resolved={} (derived has empty sdp)", key.path(), fallback.key().path());
+                        session.setStreamKey(fallback.key());
+                        if (state == RtspFsmState.IDLE) {
+                            state = RtspFsmState.SUBSCRIBER_NEGOTIATING;
+                        }
+                        ctx.writeAndFlush(RtspResponses.describeOk(cseq, fallbackSdp));
+                        return;
+                    }
+                }
+            }
             ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.NOT_FOUND));
             return;
         }

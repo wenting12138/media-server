@@ -4,15 +4,23 @@ import com.wenting.mediaserver.config.MediaServerConfig;
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.core.publish.PublishedStream;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
+import com.wenting.mediaserver.protocol.rtp.H264RtpDepacketizer;
+import com.wenting.mediaserver.protocol.rtp.H264RtpPacketizer;
+import com.wenting.mediaserver.protocol.rtp.RtpHeader;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.List;
+import java.util.Base64;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Pure-Java transcoder baseline: forwards encoded packets to a derived published stream.
@@ -23,6 +31,7 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
     private static final Logger log = LoggerFactory.getLogger(JavaStreamTranscoder.class);
 
     private final String outputSuffix;
+    private final boolean visibleWatermarkEnabled;
     private final H264SeiTimestampWatermarkInjector seiWatermarkInjector = new H264SeiTimestampWatermarkInjector();
     private final VisibleWatermarkEngine visibleWatermarkEngine;
     private final Map<StreamKey, DerivedStreamHandle> derivedBySource = new ConcurrentHashMap<StreamKey, DerivedStreamHandle>();
@@ -30,12 +39,11 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
 
     public JavaStreamTranscoder(MediaServerConfig config) {
         this.outputSuffix = config.transcodeOutputSuffix();
-        this.visibleWatermarkEngine = config.javaVisibleWatermarkEnabled()
+        this.visibleWatermarkEnabled = config.javaVisibleWatermarkEnabled();
+        this.visibleWatermarkEngine = visibleWatermarkEnabled
                 ? new PlaceholderVisibleWatermarkEngine()
                 : new NoopVisibleWatermarkEngine();
-        if (config.javaVisibleWatermarkEnabled()) {
-            log.info("Java transcoder visible watermark path enabled");
-        }
+        log.info("Java transcoder visible watermark enabled={}", visibleWatermarkEnabled);
     }
 
     @Override
@@ -85,6 +93,20 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
         try {
             if (packet.payloadFormat() == EncodedMediaPacket.PayloadFormat.RTMP_TAG) {
                 transformed = transformRtmpPacket(sourceKey, packet, payload);
+                if (packet.trackType() == EncodedMediaPacket.TrackType.VIDEO
+                        && packet.codecType() == EncodedMediaPacket.CodecType.H264) {
+                    List<ByteBuf> prefixPackets = visibleWatermarkEngine.pollPrefixPackets(sourceKey);
+                    if (prefixPackets != null && !prefixPackets.isEmpty()) {
+                        log.debug("Java transcoder emit {} prefix packet(s) for {}", prefixPackets.size(), sourceKey.path());
+                        for (ByteBuf prefix : prefixPackets) {
+                            try {
+                                relayRtmp(handle.stream, EncodedMediaPacket.TrackType.VIDEO, prefix, 0, packet.messageStreamId());
+                            } finally {
+                                ReferenceCountUtil.safeRelease(prefix);
+                            }
+                        }
+                    }
+                }
                 relayRtmp(handle.stream, packet.trackType(), transformed, packet.timestamp(), packet.messageStreamId());
                 return;
             }
@@ -111,6 +133,7 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
             localRegistry.unpublish(handle.derivedKey, handle.publisherSessionId);
         }
         seiWatermarkInjector.clear(sourceKey);
+        visibleWatermarkEngine.clear(sourceKey);
         log.info("Java transcoder stop source={} derived={}", sourceKey.path(), handle.derivedKey.path());
     }
 
@@ -122,6 +145,7 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
                 DerivedStreamHandle handle = entry.getValue();
                 localRegistry.unpublish(handle.derivedKey, handle.publisherSessionId);
                 seiWatermarkInjector.clear(entry.getKey());
+                visibleWatermarkEngine.clear(entry.getKey());
             }
         }
         derivedBySource.clear();
@@ -132,14 +156,13 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
                 || packet.codecType() != EncodedMediaPacket.CodecType.H264) {
             return payload;
         }
+        if (visibleWatermarkEnabled) {
+            ByteBuf visibleTransformed = visibleWatermarkEngine.apply(sourceKey, payload, packet.timestamp());
+            return visibleTransformed == null ? payload : visibleTransformed;
+        }
         ByteBuf seiTransformed = seiWatermarkInjector.injectIfNeeded(sourceKey, payload, packet.timestamp());
         ByteBuf withSei = seiTransformed == null ? payload : seiTransformed;
-        ByteBuf visibleTransformed = visibleWatermarkEngine.apply(sourceKey, withSei, packet.timestamp());
-        ByteBuf output = visibleTransformed == null ? withSei : visibleTransformed;
-        if (withSei != payload && withSei != output) {
-            ReferenceCountUtil.safeRelease(withSei);
-        }
-        return output;
+        return withSei;
     }
 
     private void relayRtmp(PublishedStream target, EncodedMediaPacket.TrackType trackType, ByteBuf payload, int timestamp, int messageStreamId) {

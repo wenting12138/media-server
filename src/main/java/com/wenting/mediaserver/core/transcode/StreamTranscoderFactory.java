@@ -14,6 +14,11 @@ public final class StreamTranscoderFactory {
         if ("ffmpeg".equalsIgnoreCase(name)) {
             return new FfmpegTranscodeProcessor(config);
         }
+        if ("hybrid".equalsIgnoreCase(name) || "mixed".equalsIgnoreCase(name)) {
+            return new HybridStreamTranscoder(
+                    new JavaStreamTranscoder(config),
+                    new FfmpegTranscodeProcessor(config));
+        }
         if ("java".equalsIgnoreCase(name) || "purejava".equalsIgnoreCase(name)) {
             return new JavaStreamTranscoder(config);
         }
