@@ -186,6 +186,7 @@ final class RtspStateMachine {
         }
         Optional<PublishedStream> ps = registry.publishedForPlayback(key);
         if (!ps.isPresent()) {
+            log.info("RTSP DESCRIBE {} not found", key.path());
             ctx.writeAndFlush(RtspResponses.error(cseq, HttpResponseStatus.NOT_FOUND));
             return;
         }
