@@ -20,11 +20,13 @@ public final class H264RtpDepacketizer {
 
     private ByteBuf fuBuffer;
     private int expectedFuNalType = -1;
+    private int expectedFuSeq = -1;
 
     public void reset() {
         ReferenceCountUtil.release(fuBuffer);
         fuBuffer = null;
         expectedFuNalType = -1;
+        expectedFuSeq = -1;
     }
 
     public void ingest(ByteBuf rtpPacket, Consumer<ByteBuf> onNal) {
@@ -39,6 +41,7 @@ public final class H264RtpDepacketizer {
         if (!payload.isReadable()) {
             return;
         }
+        int seq = rtpPacket.getUnsignedShort(rtpPacket.readerIndex() + 2);
         int nalHeader = payload.getUnsignedByte(0);
         int nalType = nalHeader & 0x1F;
 
@@ -47,7 +50,7 @@ public final class H264RtpDepacketizer {
         } else if (nalType == NAL_STAP_A) {
             emitStapA(payload, onNal);
         } else if (nalType == NAL_FU_A) {
-            handleFuA(payload, onNal);
+            handleFuA(payload, seq, onNal);
         } else {
             // STAP-B, MTAP, FU-B, padding: ignored for MVP
         }
@@ -76,7 +79,7 @@ public final class H264RtpDepacketizer {
         }
     }
 
-    private void handleFuA(ByteBuf fuPayload, Consumer<ByteBuf> onNal) {
+    private void handleFuA(ByteBuf fuPayload, int seq, Consumer<ByteBuf> onNal) {
         if (fuPayload.readableBytes() < 2) {
             resetFuState();
             return;
@@ -99,9 +102,18 @@ public final class H264RtpDepacketizer {
             int reconstructedNalHeader = (fuIndicator & 0xE0) | nalType;
             fuBuffer = Unpooled.buffer();
             fuBuffer.writeByte(reconstructedNalHeader);
+            expectedFuSeq = (seq + 1) & 0xFFFF;
         } else if (fuBuffer == null || expectedFuNalType != nalType) {
             resetFuState();
             return;
+        } else {
+            // UDP may drop/reorder RTP packets. If FU-A sequence is not continuous,
+            // drop the whole fragmented NAL to avoid emitting corrupted slices.
+            if (expectedFuSeq != seq) {
+                resetFuState();
+                return;
+            }
+            expectedFuSeq = (seq + 1) & 0xFFFF;
         }
 
         fuBuffer.writeBytes(fuPayload.slice(fuPayload.readerIndex() + dataOffset, dataLen));
@@ -109,6 +121,7 @@ public final class H264RtpDepacketizer {
             ByteBuf nalBody = fuBuffer;
             fuBuffer = null;
             expectedFuNalType = -1;
+            expectedFuSeq = -1;
             ByteBuf out = Unpooled.buffer(START_CODE.length + nalBody.readableBytes());
             out.writeBytes(START_CODE);
             out.writeBytes(nalBody);
@@ -121,5 +134,6 @@ public final class H264RtpDepacketizer {
         ReferenceCountUtil.release(fuBuffer);
         fuBuffer = null;
         expectedFuNalType = -1;
+        expectedFuSeq = -1;
     }
 }

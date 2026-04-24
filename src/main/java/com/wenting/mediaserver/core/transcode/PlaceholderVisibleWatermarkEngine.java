@@ -382,6 +382,11 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
                 av_dict_set(dict, "x264-params",
                         "annexb=1:repeat-headers=1:aud=0:scenecut=0:keyint=25:min-keyint=25:bframes=0:cabac=0:ref=1:weightp=0:8x8dct=0",
                         0);
+            } else if ("libopenh264".equals(codecName)) {
+                // OpenH264 expects constrained_baseline rather than x264 baseline/high style profiles.
+                av_dict_set(dict, "profile", "constrained_baseline", 0);
+                av_dict_set(dict, "rc_mode", "bitrate", 0);
+                av_dict_set(dict, "allow_skip_frames", "1", 0);
             }
             int rc = avcodec_open2(encCtx, codec, dict);
             av_dict_free(dict);

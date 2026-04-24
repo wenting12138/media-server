@@ -6,9 +6,11 @@ import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class H264RtpDepacketizerTest {
 
@@ -68,6 +70,38 @@ class H264RtpDepacketizerTest {
         payload.release();
     }
 
+    @Test
+    void fuADropsNalOnSequenceGap() {
+        H264RtpDepacketizer d = new H264RtpDepacketizer();
+        AtomicInteger nals = new AtomicInteger();
+        AtomicReference<ByteBuf> last = new AtomicReference<ByteBuf>();
+
+        ByteBuf start = rtpWrapFuA(100, true, false, 5, new byte[]{0x11, 0x22});
+        ByteBuf midLost = rtpWrapFuA(102, false, false, 5, new byte[]{0x33, 0x44}); // seq=101 lost
+        ByteBuf end = rtpWrapFuA(103, false, true, 5, new byte[]{0x55, 0x66});
+        try {
+            d.ingest(start, nal -> {
+                nals.incrementAndGet();
+                last.set(nal);
+            });
+            d.ingest(midLost, nal -> {
+                nals.incrementAndGet();
+                last.set(nal);
+            });
+            d.ingest(end, nal -> {
+                nals.incrementAndGet();
+                last.set(nal);
+            });
+            assertEquals(0, nals.get());
+            assertNull(last.get());
+        } finally {
+            start.release();
+            midLost.release();
+            end.release();
+            ReferenceCountUtil.release(last.get());
+        }
+    }
+
     private static ByteBuf rtpWrap(ByteBuf nalPayload) {
         ByteBuf rtp = Unpooled.buffer(12 + nalPayload.readableBytes());
         rtp.writeByte(0x80);
@@ -76,6 +110,27 @@ class H264RtpDepacketizerTest {
         rtp.writeInt(0);
         rtp.writeInt(0x11223344);
         rtp.writeBytes(nalPayload);
+        return rtp;
+    }
+
+    private static ByteBuf rtpWrapFuA(int seq, boolean start, boolean end, int nalType, byte[] fragmentPayload) {
+        ByteBuf rtp = Unpooled.buffer(12 + 2 + fragmentPayload.length);
+        rtp.writeByte(0x80);
+        rtp.writeByte(0x60);
+        rtp.writeShort(seq & 0xFFFF);
+        rtp.writeInt(0);
+        rtp.writeInt(0x11223344);
+        int nri = 3 << 5;
+        rtp.writeByte(nri | 28); // FU-A indicator
+        int fuHeader = nalType & 0x1F;
+        if (start) {
+            fuHeader |= 0x80;
+        }
+        if (end) {
+            fuHeader |= 0x40;
+        }
+        rtp.writeByte(fuHeader);
+        rtp.writeBytes(fragmentPayload);
         return rtp;
     }
 }
