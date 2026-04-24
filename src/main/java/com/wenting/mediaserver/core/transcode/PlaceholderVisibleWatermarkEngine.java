@@ -82,11 +82,13 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
             return rtmpH264Payload;
         }
         StreamState st = states.computeIfAbsent(streamKey, k -> new StreamState());
-        try {
-            return transcode(st, streamKey, rtmpH264Payload, timestampMs);
-        } catch (Exception e) {
-            log.warn("Visible watermark failed, fallback passthrough stream={}", streamKey.path(), e);
-            return rtmpH264Payload;
+        synchronized (st) {
+            try {
+                return transcode(st, streamKey, rtmpH264Payload, timestampMs);
+            } catch (Exception e) {
+                log.warn("Visible watermark failed, fallback passthrough stream={}", streamKey.path(), e);
+                return rtmpH264Payload;
+            }
         }
     }
 
@@ -101,30 +103,32 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
             return annexBAccessUnit;
         }
         StreamState st = states.computeIfAbsent(streamKey, k -> new StreamState());
-        try {
-            byte[] annexb = toBytes(annexBAccessUnit);
-            if (annexb.length == 0) {
+        synchronized (st) {
+            try {
+                byte[] annexb = toBytes(annexBAccessUnit);
+                if (annexb.length == 0) {
+                    return annexBAccessUnit;
+                }
+                if (!st.ensureDecoder()) {
+                    return annexBAccessUnit;
+                }
+                if (!st.decodePacket(annexb, timestampMs)) {
+                    return annexBAccessUnit;
+                }
+                byte[] encodedAnnexb = st.encodeOneFrame(streamKey, timestampMs, requestKeyFrame);
+                if (encodedAnnexb == null || encodedAnnexb.length == 0) {
+                    return annexBAccessUnit;
+                }
+                ByteBuf out = Unpooled.wrappedBuffer(encodedAnnexb);
+                if (st.appliedLogged.compareAndSet(false, true)) {
+                    log.info("Visible watermark applied stream={} in={}B out={}B ts={}",
+                            streamKey.path(), annexBAccessUnit.readableBytes(), out.readableBytes(), timestampMs);
+                }
+                return out;
+            } catch (Exception e) {
+                log.warn("Visible watermark annexb failed, fallback passthrough stream={}", streamKey.path(), e);
                 return annexBAccessUnit;
             }
-            if (!st.ensureDecoder()) {
-                return annexBAccessUnit;
-            }
-            if (!st.decodePacket(annexb, timestampMs)) {
-                return annexBAccessUnit;
-            }
-            byte[] encodedAnnexb = st.encodeOneFrame(streamKey, timestampMs, requestKeyFrame);
-            if (encodedAnnexb == null || encodedAnnexb.length == 0) {
-                return annexBAccessUnit;
-            }
-            ByteBuf out = Unpooled.wrappedBuffer(encodedAnnexb);
-            if (st.appliedLogged.compareAndSet(false, true)) {
-                log.info("Visible watermark applied stream={} in={}B out={}B ts={}",
-                        streamKey.path(), annexBAccessUnit.readableBytes(), out.readableBytes(), timestampMs);
-            }
-            return out;
-        } catch (Exception e) {
-            log.warn("Visible watermark annexb failed, fallback passthrough stream={}", streamKey.path(), e);
-            return annexBAccessUnit;
         }
     }
 
@@ -135,7 +139,9 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         }
         StreamState st = states.remove(streamKey);
         if (st != null) {
-            st.release();
+            synchronized (st) {
+                st.release();
+            }
         }
     }
 
@@ -148,7 +154,10 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         if (st == null) {
             return Collections.emptyList();
         }
-        ByteBuf seq = st.pollPendingSequenceHeader();
+        ByteBuf seq;
+        synchronized (st) {
+            seq = st.pollPendingSequenceHeader();
+        }
         if (seq == null) {
             return Collections.emptyList();
         }
@@ -383,9 +392,9 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
                         "annexb=1:repeat-headers=1:aud=0:scenecut=0:keyint=25:min-keyint=25:bframes=0:cabac=0:ref=1:weightp=0:8x8dct=0",
                         0);
             } else if ("libopenh264".equals(codecName)) {
-                // OpenH264 expects constrained_baseline rather than x264 baseline/high style profiles.
-                av_dict_set(dict, "profile", "constrained_baseline", 0);
-                av_dict_set(dict, "rc_mode", "bitrate", 0);
+                // Do not force profile for libopenh264: different builds expose different accepted values.
+                // Keep only broadly supported rate-control options.
+                av_dict_set(dict, "rc_mode", "1", 0);
                 av_dict_set(dict, "allow_skip_frames", "1", 0);
             }
             int rc = avcodec_open2(encCtx, codec, dict);
