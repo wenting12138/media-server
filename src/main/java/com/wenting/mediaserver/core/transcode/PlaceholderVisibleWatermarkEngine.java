@@ -46,6 +46,7 @@ import static org.bytedeco.ffmpeg.global.avutil.AVERROR_EAGAIN;
 import static org.bytedeco.ffmpeg.global.avutil.AVERROR_EOF;
 import static org.bytedeco.ffmpeg.global.avutil.AV_PIX_FMT_NONE;
 import static org.bytedeco.ffmpeg.global.avutil.AV_PIX_FMT_YUV420P;
+import static org.bytedeco.ffmpeg.global.avutil.AV_PICTURE_TYPE_I;
 import static org.bytedeco.ffmpeg.global.avutil.av_dict_free;
 import static org.bytedeco.ffmpeg.global.avutil.av_dict_set;
 import static org.bytedeco.ffmpeg.global.avutil.av_frame_alloc;
@@ -86,6 +87,44 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         } catch (Exception e) {
             log.warn("Visible watermark failed, fallback passthrough stream={}", streamKey.path(), e);
             return rtmpH264Payload;
+        }
+    }
+
+    @Override
+    public ByteBuf applyAnnexB(StreamKey streamKey, ByteBuf annexBAccessUnit, int timestampMs) {
+        return applyAnnexB(streamKey, annexBAccessUnit, timestampMs, false);
+    }
+
+    @Override
+    public ByteBuf applyAnnexB(StreamKey streamKey, ByteBuf annexBAccessUnit, int timestampMs, boolean requestKeyFrame) {
+        if (streamKey == null || annexBAccessUnit == null || !annexBAccessUnit.isReadable()) {
+            return annexBAccessUnit;
+        }
+        StreamState st = states.computeIfAbsent(streamKey, k -> new StreamState());
+        try {
+            byte[] annexb = toBytes(annexBAccessUnit);
+            if (annexb.length == 0) {
+                return annexBAccessUnit;
+            }
+            if (!st.ensureDecoder()) {
+                return annexBAccessUnit;
+            }
+            if (!st.decodePacket(annexb, timestampMs)) {
+                return annexBAccessUnit;
+            }
+            byte[] encodedAnnexb = st.encodeOneFrame(streamKey, timestampMs, requestKeyFrame);
+            if (encodedAnnexb == null || encodedAnnexb.length == 0) {
+                return annexBAccessUnit;
+            }
+            ByteBuf out = Unpooled.wrappedBuffer(encodedAnnexb);
+            if (st.appliedLogged.compareAndSet(false, true)) {
+                log.info("Visible watermark applied stream={} in={}B out={}B ts={}",
+                        streamKey.path(), annexBAccessUnit.readableBytes(), out.readableBytes(), timestampMs);
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("Visible watermark annexb failed, fallback passthrough stream={}", streamKey.path(), e);
+            return annexBAccessUnit;
         }
     }
 
@@ -147,7 +186,7 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         if (!st.decodePacket(annexb, timestampMs)) {
             return payload;
         }
-        byte[] encodedAnnexb = st.encodeOneFrame(streamKey, timestampMs);
+        byte[] encodedAnnexb = st.encodeOneFrame(streamKey, timestampMs, false);
         if (encodedAnnexb == null || encodedAnnexb.length == 0) {
             return payload;
         }
@@ -263,7 +302,7 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
             return rc >= 0;
         }
 
-        private byte[] encodeOneFrame(StreamKey streamKey, int timestampMs) {
+        private byte[] encodeOneFrame(StreamKey streamKey, int timestampMs, boolean requestKeyFrame) {
             int rc;
             while ((rc = avcodec_receive_frame(decCtx, decFrame)) >= 0) {
                 if (!ensureEncoder(decFrame, streamKey)) {
@@ -274,6 +313,10 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
                     return null;
                 }
                 drawTimestamp(frameForEncode, streamKey, timestampMs);
+                if (requestKeyFrame) {
+                    frameForEncode.key_frame(1);
+                    frameForEncode.pict_type(AV_PICTURE_TYPE_I);
+                }
                 frameForEncode.pts(encPts++);
                 rc = avcodec_send_frame(encCtx, frameForEncode);
                 if (rc < 0) {
@@ -808,6 +851,15 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         }
         packet.data().position(0).put(data);
         return 0;
+    }
+
+    private static byte[] toBytes(ByteBuf buf) {
+        if (buf == null || !buf.isReadable()) {
+            return new byte[0];
+        }
+        byte[] out = new byte[buf.readableBytes()];
+        buf.getBytes(buf.readerIndex(), out);
+        return out;
     }
 
     private static int ffErrEagain() {

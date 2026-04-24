@@ -13,6 +13,14 @@ interface VisibleWatermarkEngine {
 
     ByteBuf apply(StreamKey streamKey, ByteBuf rtmpH264Payload, int timestampMs);
 
+    default ByteBuf applyAnnexB(StreamKey streamKey, ByteBuf annexBAccessUnit, int timestampMs) {
+        return annexBAccessUnit;
+    }
+
+    default ByteBuf applyAnnexB(StreamKey streamKey, ByteBuf annexBAccessUnit, int timestampMs, boolean requestKeyFrame) {
+        return applyAnnexB(streamKey, annexBAccessUnit, timestampMs);
+    }
+
     default void clear(StreamKey streamKey) {
     }
 
