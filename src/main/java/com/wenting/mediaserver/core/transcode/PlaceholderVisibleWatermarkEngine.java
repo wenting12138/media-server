@@ -109,6 +109,9 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
                 if (annexb.length == 0) {
                     return annexBAccessUnit;
                 }
+                if (!st.acceptsAnnexbFrame(streamKey, requestKeyFrame)) {
+                    return annexBAccessUnit;
+                }
                 if (!st.ensureDecoder()) {
                     return annexBAccessUnit;
                 }
@@ -188,6 +191,9 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         if (!st.hasInputParameterSets()) {
             return payload;
         }
+        if (!st.acceptsRtmpFrame(streamKey, payload, frameType)) {
+            return payload;
+        }
         byte[] annexb = st.avccToAnnexb(payload, frameType == 1);
         if (annexb == null || annexb.length == 0) {
             return payload;
@@ -228,6 +234,10 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         private byte[] encPps;
         private ByteBuf pendingSequenceHeader;
         private byte[] lastSequenceHeaderBytes;
+        private boolean rtmpDecoderPrimed;
+        private boolean annexbDecoderPrimed;
+        private final AtomicBoolean rtmpWaitKeyFrameLogged = new AtomicBoolean(false);
+        private final AtomicBoolean annexbWaitKeyFrameLogged = new AtomicBoolean(false);
         private final AtomicBoolean appliedLogged = new AtomicBoolean(false);
 
         private boolean hasInputParameterSets() {
@@ -282,6 +292,55 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
                 }
                 off += len;
             }
+            rtmpDecoderPrimed = false;
+            rtmpWaitKeyFrameLogged.set(false);
+        }
+
+        private boolean acceptsRtmpFrame(StreamKey streamKey, ByteBuf payload, int frameType) {
+            if (rtmpDecoderPrimed) {
+                return true;
+            }
+            boolean idr = frameType == 1 && containsAvccIdr(payload);
+            if (!idr) {
+                if (rtmpWaitKeyFrameLogged.compareAndSet(false, true)) {
+                    log.debug("Visible watermark wait RTMP IDR stream={}", streamKey.path());
+                }
+                return false;
+            }
+            rtmpDecoderPrimed = true;
+            rtmpWaitKeyFrameLogged.set(false);
+            return true;
+        }
+
+        private boolean containsAvccIdr(ByteBuf payload) {
+            if (payload == null || payload.readableBytes() < 6) {
+                return false;
+            }
+            int ri = payload.readerIndex();
+            int codecId = payload.getUnsignedByte(ri) & 0x0F;
+            int avcPacketType = payload.getUnsignedByte(ri + 1);
+            if (codecId != 7 || avcPacketType != 1) {
+                return false;
+            }
+            int off = ri + 5;
+            int end = ri + payload.readableBytes();
+            int lenSize = nalLengthSize <= 0 ? 4 : nalLengthSize;
+            while (off + lenSize <= end) {
+                int naluLen = 0;
+                for (int i = 0; i < lenSize; i++) {
+                    naluLen = (naluLen << 8) | payload.getUnsignedByte(off + i);
+                }
+                off += lenSize;
+                if (naluLen <= 0 || off + naluLen > end) {
+                    return false;
+                }
+                int nalType = payload.getUnsignedByte(off) & 0x1F;
+                if (nalType == 5) {
+                    return true;
+                }
+                off += naluLen;
+            }
+            return false;
         }
 
         private boolean ensureDecoder() {
@@ -760,6 +819,21 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
             return list;
         }
 
+        private boolean acceptsAnnexbFrame(StreamKey streamKey, boolean requestKeyFrame) {
+            if (annexbDecoderPrimed) {
+                return true;
+            }
+            if (!requestKeyFrame) {
+                if (annexbWaitKeyFrameLogged.compareAndSet(false, true)) {
+                    log.debug("Visible watermark wait RTP keyframe stream={}", streamKey.path());
+                }
+                return false;
+            }
+            annexbDecoderPrimed = true;
+            annexbWaitKeyFrameLogged.set(false);
+            return true;
+        }
+
         private int findStartCode(byte[] bytes, int from) {
             for (int i = Math.max(0, from); i + 3 < bytes.length; i++) {
                 if (bytes[i] == 0x00 && bytes[i + 1] == 0x00) {
@@ -861,6 +935,10 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
             }
             decoderReady = false;
             encoderReady = false;
+            rtmpDecoderPrimed = false;
+            annexbDecoderPrimed = false;
+            rtmpWaitKeyFrameLogged.set(false);
+            annexbWaitKeyFrameLogged.set(false);
         }
     }
 
