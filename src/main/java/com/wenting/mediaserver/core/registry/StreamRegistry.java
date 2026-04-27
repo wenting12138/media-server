@@ -2,7 +2,6 @@ package com.wenting.mediaserver.core.registry;
 
 import com.wenting.mediaserver.core.model.MediaSession;
 import com.wenting.mediaserver.core.model.StreamKey;
-import com.wenting.mediaserver.core.model.StreamProtocol;
 import com.wenting.mediaserver.core.publish.PublishedStream;
 import com.wenting.mediaserver.core.transcode.StreamFrameProcessor;
 
@@ -74,18 +73,11 @@ public final class StreamRegistry {
         if (playbackSuffix != null && !playbackSuffix.isEmpty() && !requested.stream().endsWith(playbackSuffix)) {
             StreamKey derived = new StreamKey(requested.protocol(), requested.app(), requested.stream() + playbackSuffix);
             PublishedStream preferred = published.get(derived);
-            if (preferred == null) {
-                preferred = findAnyProtocol(requested.app(), requested.stream() + playbackSuffix);
-            }
             if (preferred != null) {
                 return Optional.of(preferred);
             }
         }
-        PublishedStream exact = published.get(requested);
-        if (exact != null) {
-            return Optional.of(exact);
-        }
-        return Optional.ofNullable(findAnyProtocol(requested.app(), requested.stream()));
+        return Optional.ofNullable(published.get(requested));
     }
 
     public List<StreamKey> listPublishedKeys() {
@@ -98,16 +90,5 @@ public final class StreamRegistry {
 
     public Optional<MediaSession> publisherOf(StreamKey key) {
         return published(key).map(PublishedStream::publisherSession);
-    }
-
-    private PublishedStream findAnyProtocol(String app, String stream) {
-        for (StreamProtocol protocol : StreamProtocol.values()) {
-            StreamKey k = new StreamKey(protocol, app, stream);
-            PublishedStream hit = published.get(k);
-            if (hit != null) {
-                return hit;
-            }
-        }
-        return null;
     }
 }

@@ -96,17 +96,14 @@ class StreamRegistryTest {
     }
 
     @Test
-    void playbackFallsBackAcrossProtocols() {
+    void playbackDoesNotFallbackAcrossProtocols() {
         StreamRegistry r = new StreamRegistry();
         EmbeddedChannel ch = new EmbeddedChannel();
         StreamKey rtmpDerived = new StreamKey(StreamProtocol.RTMP, "live", "cam5__wm");
         StreamKey rtspRequest = new StreamKey(StreamProtocol.RTSP, "live", "cam5");
 
         PublishedStream derivedPs = r.tryPublish(rtmpDerived, null, "v=0\r\n", ch).get();
-        PublishedStream resolved = r.publishedForPlayback(rtspRequest).orElse(null);
-
-        assertTrue(resolved != null);
-        assertEquals(derivedPs.key(), resolved.key());
+        assertFalse(r.publishedForPlayback(rtspRequest).isPresent());
 
         r.unpublish(rtmpDerived, derivedPs.publisherSession().id());
     }

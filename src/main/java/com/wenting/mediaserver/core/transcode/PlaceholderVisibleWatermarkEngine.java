@@ -185,6 +185,9 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         if (avcPacketType != 1) {
             return payload;
         }
+        if (!st.hasInputParameterSets()) {
+            return payload;
+        }
         byte[] annexb = st.avccToAnnexb(payload, frameType == 1);
         if (annexb == null || annexb.length == 0) {
             return payload;
@@ -226,6 +229,10 @@ final class PlaceholderVisibleWatermarkEngine implements VisibleWatermarkEngine 
         private ByteBuf pendingSequenceHeader;
         private byte[] lastSequenceHeaderBytes;
         private final AtomicBoolean appliedLogged = new AtomicBoolean(false);
+
+        private boolean hasInputParameterSets() {
+            return sps != null && sps.length > 0 && pps != null && pps.length > 0;
+        }
 
         private void parseSequenceHeader(ByteBuf payload) {
             int base = payload.readerIndex() + 5;
