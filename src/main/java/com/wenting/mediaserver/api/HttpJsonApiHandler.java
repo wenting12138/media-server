@@ -205,7 +205,7 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
     }
 
     private void serveHttpFlv(ChannelHandlerContext ctx, FullHttpRequest req, HttpFlvRequest flvRequest) throws Exception {
-        PublishedStream stream = resolvePlayback(flvRequest.app, flvRequest.stream);
+        PublishedStream stream = resolvePlayback(flvRequest.app, flvRequest.stream, flvRequest.protocol);
         if (stream == null) {
             send(ctx, req, HttpResponseStatus.NOT_FOUND, ApiResponse.error(404, "stream not found"));
             return;
@@ -221,13 +221,19 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
 
         stream.addHttpFlvSubscriber(ctx);
         ctx.channel().closeFuture().addListener(future -> stream.removeHttpFlvSubscriber(ctx));
-        log.info("HTTP-FLV play start request={}/{} resolved={}",
+        log.info("HTTP-FLV play start request={}/{} protocol={} resolved={}",
                 flvRequest.app,
                 flvRequest.stream,
+                flvRequest.protocol == null ? "auto" : flvRequest.protocol.name().toLowerCase(),
                 stream.key().path());
     }
 
-    private PublishedStream resolvePlayback(String app, String stream) {
+    private PublishedStream resolvePlayback(String app, String stream, StreamProtocol forceProtocol) {
+        if (forceProtocol != null) {
+            StreamKey forced = new StreamKey(forceProtocol, app, stream);
+            java.util.Optional<PublishedStream> found = registry.publishedForPlayback(forced);
+            return found.orElse(null);
+        }
         StreamProtocol[] order = new StreamProtocol[] {
                 StreamProtocol.RTMP,
                 StreamProtocol.RTSP,
@@ -251,29 +257,66 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
         if (rel.isEmpty()) {
             return null;
         }
-        int slash = rel.indexOf('/');
+        String[] parts = rel.split("/");
+        StreamProtocol forceProtocol = null;
         String app;
         String stream;
-        if (slash < 0) {
+        if (parts.length == 1) {
             app = "live";
-            stream = rel;
+            stream = parts[0];
+        } else if (parts.length == 2) {
+            StreamProtocol maybeProtocol = parseProtocol(parts[0]);
+            if (maybeProtocol != null) {
+                forceProtocol = maybeProtocol;
+                app = "live";
+                stream = parts[1];
+            } else {
+                app = parts[0];
+                stream = parts[1];
+            }
+        } else if (parts.length == 3) {
+            StreamProtocol maybeProtocol = parseProtocol(parts[0]);
+            if (maybeProtocol == null) {
+                return null;
+            }
+            forceProtocol = maybeProtocol;
+            app = parts[1];
+            stream = parts[2];
         } else {
-            app = rel.substring(0, slash);
-            stream = rel.substring(slash + 1);
+            return null;
         }
         if (app.trim().isEmpty() || stream.trim().isEmpty()) {
             return null;
         }
-        return new HttpFlvRequest(app, stream);
+        return new HttpFlvRequest(app, stream, forceProtocol);
+    }
+
+    private StreamProtocol parseProtocol(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String v = raw.trim().toLowerCase();
+        if ("rtsp".equals(v)) {
+            return StreamProtocol.RTSP;
+        }
+        if ("rtmp".equals(v)) {
+            return StreamProtocol.RTMP;
+        }
+        if ("unknown".equals(v)) {
+            return StreamProtocol.UNKNOWN;
+        }
+        return null;
     }
 
     private static final class HttpFlvRequest {
         final String app;
         final String stream;
+        final StreamProtocol protocol;
 
-        HttpFlvRequest(String app, String stream) {
+        HttpFlvRequest(String app, String stream, StreamProtocol protocol) {
             this.app = app;
             this.stream = stream;
+            this.protocol = protocol;
         }
     }
 }

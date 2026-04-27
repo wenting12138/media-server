@@ -3,6 +3,7 @@ package com.wenting.mediaserver.core.publish;
 import com.wenting.mediaserver.core.model.MediaSession;
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.core.transcode.EncodedMediaPacket;
+import com.wenting.mediaserver.core.transcode.RtpH264AccessUnitNormalizer;
 import com.wenting.mediaserver.core.transcode.StreamFrameProcessor;
 import com.wenting.mediaserver.protocol.flv.FlvWriter;
 import com.wenting.mediaserver.protocol.rtp.H264RtpDepacketizer;
@@ -17,9 +18,11 @@ import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Base64;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -47,8 +50,15 @@ public final class PublishedStream {
     private volatile ByteBuf rtmpVideoSeqHeader;
     private volatile ByteBuf rtmpAudioSeqHeader;
     private volatile ByteBuf rtmpLastVideoKeyFrame;
+    private volatile ByteBuf flvVideoSeqHeader;
+    private volatile ByteBuf flvAudioSeqHeader;
+    private volatile ByteBuf flvLastVideoKeyFrame;
     private volatile int rtmpAvcNalLengthSize = 4;
+    private volatile int rtspVideoBaseRtpTs = Integer.MIN_VALUE;
+    private volatile byte[] rtspSps;
+    private volatile byte[] rtspPps;
     private final H264RtpDepacketizer h264 = new H264RtpDepacketizer();
+    private final RtpH264AccessUnitNormalizer rtspFlvAccessUnitNormalizer = new RtpH264AccessUnitNormalizer();
     private final AtomicLong videoInPackets = new AtomicLong();
     private final AtomicLong videoInBytes = new AtomicLong();
     private final AtomicLong videoOutTcpPackets = new AtomicLong();
@@ -92,6 +102,7 @@ public final class PublishedStream {
 
     public void setSdp(String sdp) {
         this.sdp = sdp;
+        seedRtspVideoParameterSetsFromSdp(sdp);
     }
 
     public void setPublisherChannel(Channel publisherChannel) {
@@ -143,22 +154,22 @@ public final class PublishedStream {
             return;
         }
         HttpFlvSubscriber sub = new HttpFlvSubscriber(ctx);
-        sub.hasVideoSequenceHeader = rtmpVideoSeqHeader != null && rtmpVideoSeqHeader.isReadable();
+        ByteBuf vsh = resolveHttpFlvVideoSeqHeader();
+        sub.hasVideoSequenceHeader = vsh != null && vsh.isReadable();
         httpFlvSubscribers.addIfAbsent(sub);
         FlvWriter.writeHeader(ctx);
         ByteBuf meta = rtmpMetadata;
         if (meta != null && meta.isReadable()) {
             FlvWriter.writeTag(ctx, RtmpConstants.TYPE_DATA_AMF0, 0, meta.retainedDuplicate());
         }
-        ByteBuf vsh = rtmpVideoSeqHeader;
         if (vsh != null && vsh.isReadable()) {
             FlvWriter.writeTag(ctx, RtmpConstants.TYPE_VIDEO, 0, vsh.retainedDuplicate());
         }
-        ByteBuf ash = rtmpAudioSeqHeader;
+        ByteBuf ash = resolveHttpFlvAudioSeqHeader();
         if (ash != null && ash.isReadable()) {
             FlvWriter.writeTag(ctx, RtmpConstants.TYPE_AUDIO, 0, ash.retainedDuplicate());
         }
-        ByteBuf kf = rtmpLastVideoKeyFrame;
+        ByteBuf kf = resolveHttpFlvLastVideoKeyFrame();
         if (sub.hasVideoSequenceHeader && kf != null && kf.isReadable()) {
             FlvWriter.writeTag(ctx, RtmpConstants.TYPE_VIDEO, 0, kf.retainedDuplicate());
             sub.waitingVideoKeyFrame = false;
@@ -215,6 +226,7 @@ public final class PublishedStream {
         int rtpBytes = rtp.readableBytes();
         videoInPackets.incrementAndGet();
         videoInBytes.addAndGet(rtpBytes);
+        relayRtspVideoRtpToHttpFlvSubscribers(rtp);
         processPacket(
                 EncodedMediaPacket.SourceProtocol.RTSP,
                 EncodedMediaPacket.TrackType.VIDEO,
@@ -438,6 +450,332 @@ public final class PublishedStream {
         return false;
     }
 
+    private ByteBuf resolveHttpFlvVideoSeqHeader() {
+        ByteBuf fromRtmp = rtmpVideoSeqHeader;
+        if (fromRtmp != null && fromRtmp.isReadable()) {
+            return fromRtmp;
+        }
+        return flvVideoSeqHeader;
+    }
+
+    private ByteBuf resolveHttpFlvAudioSeqHeader() {
+        ByteBuf fromRtmp = rtmpAudioSeqHeader;
+        if (fromRtmp != null && fromRtmp.isReadable()) {
+            return fromRtmp;
+        }
+        return flvAudioSeqHeader;
+    }
+
+    private ByteBuf resolveHttpFlvLastVideoKeyFrame() {
+        ByteBuf fromRtmp = rtmpLastVideoKeyFrame;
+        if (fromRtmp != null && fromRtmp.isReadable()) {
+            return fromRtmp;
+        }
+        return flvLastVideoKeyFrame;
+    }
+
+    private void relayRtspVideoRtpToHttpFlvSubscribers(ByteBuf rtpPacket) {
+        if (rtpPacket == null || !rtpPacket.isReadable()) {
+            return;
+        }
+        List<RtpH264AccessUnitNormalizer.AccessUnit> accessUnits = rtspFlvAccessUnitNormalizer.ingest(rtpPacket);
+        if (accessUnits == null || accessUnits.isEmpty()) {
+            return;
+        }
+        for (RtpH264AccessUnitNormalizer.AccessUnit au : accessUnits) {
+            if (au == null) {
+                continue;
+            }
+            try {
+                relayRtspAccessUnitToHttpFlvSubscribers(au);
+            } finally {
+                au.release();
+            }
+        }
+    }
+
+    private void relayRtspAccessUnitToHttpFlvSubscribers(RtpH264AccessUnitNormalizer.AccessUnit accessUnit) {
+        if (accessUnit == null || !accessUnit.hasVcl() || accessUnit.annexB() == null || !accessUnit.annexB().isReadable()) {
+            return;
+        }
+        List<byte[]> nals = extractAnnexbNals(accessUnit.annexB());
+        if (nals.isEmpty()) {
+            return;
+        }
+        boolean hasIdr = false;
+        boolean hasParameterSets = false;
+        for (byte[] nal : nals) {
+            if (nal == null || nal.length == 0) {
+                continue;
+            }
+            int nalType = nal[0] & 0x1F;
+            if (nalType == 7 || nalType == 8) {
+                cacheRtspParameterSet(nalType, nal);
+                hasParameterSets = true;
+            }
+            if (nalType == 5) {
+                hasIdr = true;
+            }
+        }
+        if (hasParameterSets) {
+            refreshRtspVideoSequenceHeader();
+        }
+        int timestampMs = mapRtspVideoTimestampMs(accessUnit.timestamp90k());
+        if (hasParameterSets) {
+            ByteBuf seq = flvVideoSeqHeader;
+            if (seq != null && seq.isReadable()) {
+                relayRtmpToHttpFlvSubscribers(RtmpConstants.TYPE_VIDEO, seq, timestampMs);
+            }
+        }
+        ByteBuf payload = buildFlvAvcPayloadFromAnnexbAccessUnit(nals, hasIdr);
+        if (payload == null) {
+            return;
+        }
+        try {
+            if (hasIdr) {
+                ReferenceCountUtil.safeRelease(flvLastVideoKeyFrame);
+                flvLastVideoKeyFrame = payload.retainedDuplicate();
+            }
+            relayRtmpToHttpFlvSubscribers(RtmpConstants.TYPE_VIDEO, payload, timestampMs);
+        } finally {
+            ReferenceCountUtil.safeRelease(payload);
+        }
+    }
+
+    private void cacheRtspParameterSet(int nalType, byte[] nalBody) {
+        if (nalBody == null || nalBody.length == 0) {
+            return;
+        }
+        if (nalType == 7) {
+            rtspSps = nalBody;
+        } else if (nalType == 8) {
+            rtspPps = nalBody;
+        }
+        rtspFlvAccessUnitNormalizer.seedParameterSets(rtspSps, rtspPps);
+    }
+
+    private void refreshRtspVideoSequenceHeader() {
+        byte[] sps = rtspSps;
+        byte[] pps = rtspPps;
+        if (sps == null || sps.length < 4 || pps == null || pps.length == 0) {
+            return;
+        }
+        ByteBuf seq = buildFlvAvcSequenceHeader(sps, pps);
+        if (seq == null) {
+            return;
+        }
+        ReferenceCountUtil.safeRelease(flvVideoSeqHeader);
+        flvVideoSeqHeader = seq;
+    }
+
+    private ByteBuf buildFlvAvcSequenceHeader(byte[] sps, byte[] pps) {
+        if (sps == null || sps.length < 4 || pps == null || pps.length == 0) {
+            return null;
+        }
+        ByteBuf out = io.netty.buffer.Unpooled.buffer(16 + sps.length + pps.length);
+        out.writeByte(0x17); // keyframe + AVC
+        out.writeByte(0x00); // AVC sequence header
+        out.writeByte(0x00);
+        out.writeByte(0x00);
+        out.writeByte(0x00);
+        out.writeByte(0x01); // avcC version
+        out.writeByte(sps[1] & 0xFF);
+        out.writeByte(sps[2] & 0xFF);
+        out.writeByte(sps[3] & 0xFF);
+        out.writeByte(0xFF); // lengthSizeMinusOne = 3 (4 bytes)
+        out.writeByte(0xE1); // one SPS
+        out.writeShort(sps.length);
+        out.writeBytes(sps);
+        out.writeByte(0x01); // one PPS
+        out.writeShort(pps.length);
+        out.writeBytes(pps);
+        return out;
+    }
+
+    private ByteBuf buildFlvAvcPayloadFromAnnexbAccessUnit(List<byte[]> nals, boolean keyFrame) {
+        if (nals == null || nals.isEmpty()) {
+            return null;
+        }
+        int total = 5;
+        int count = 0;
+        for (byte[] nal : nals) {
+            if (nal == null || nal.length == 0) {
+                continue;
+            }
+            total += 4 + nal.length;
+            count++;
+        }
+        if (count <= 0) {
+            return null;
+        }
+        ByteBuf out = io.netty.buffer.Unpooled.buffer(total);
+        out.writeByte(keyFrame ? 0x17 : 0x27);
+        out.writeByte(0x01); // AVC NALU
+        out.writeByte(0x00);
+        out.writeByte(0x00);
+        out.writeByte(0x00); // composition time
+        for (byte[] nal : nals) {
+            if (nal == null || nal.length == 0) {
+                continue;
+            }
+            out.writeInt(nal.length);
+            out.writeBytes(nal);
+        }
+        return out;
+    }
+
+    private List<byte[]> extractAnnexbNals(ByteBuf annexbAu) {
+        List<byte[]> out = new ArrayList<byte[]>();
+        if (annexbAu == null || !annexbAu.isReadable()) {
+            return out;
+        }
+        byte[] bytes = new byte[annexbAu.readableBytes()];
+        annexbAu.getBytes(annexbAu.readerIndex(), bytes);
+        int offset = 0;
+        while (offset < bytes.length) {
+            int start = findStartCode(bytes, offset);
+            if (start < 0) {
+                break;
+            }
+            int startCodeLen = startCodeLength(bytes, start);
+            int nalStart = start + startCodeLen;
+            int next = findStartCode(bytes, nalStart);
+            int nalEnd = next < 0 ? bytes.length : next;
+            int nalLen = nalEnd - nalStart;
+            if (nalLen > 0) {
+                byte[] nal = new byte[nalLen];
+                System.arraycopy(bytes, nalStart, nal, 0, nalLen);
+                out.add(nal);
+            }
+            if (next < 0) {
+                break;
+            }
+            offset = next;
+        }
+        return out;
+    }
+
+    private static int findStartCode(byte[] bytes, int from) {
+        if (bytes == null || from < 0 || from >= bytes.length) {
+            return -1;
+        }
+        for (int i = from; i < bytes.length - 2; i++) {
+            if (bytes[i] == 0 && bytes[i + 1] == 0) {
+                if (bytes[i + 2] == 1) {
+                    return i;
+                }
+                if (i + 3 < bytes.length && bytes[i + 2] == 0 && bytes[i + 3] == 1) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static int startCodeLength(byte[] bytes, int index) {
+        if (bytes == null || index < 0 || index + 2 >= bytes.length) {
+            return 0;
+        }
+        if (bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1) {
+            return 3;
+        }
+        if (index + 3 < bytes.length
+                && bytes[index] == 0
+                && bytes[index + 1] == 0
+                && bytes[index + 2] == 0
+                && bytes[index + 3] == 1) {
+            return 4;
+        }
+        return 0;
+    }
+
+    private static int readRtpTimestamp(ByteBuf rtp) {
+        if (rtp == null || rtp.readableBytes() < 12) {
+            return Integer.MIN_VALUE;
+        }
+        int ri = rtp.readerIndex();
+        if (ri + 8 >= rtp.writerIndex()) {
+            return Integer.MIN_VALUE;
+        }
+        return rtp.getInt(ri + 4);
+    }
+
+    private int mapRtspVideoTimestampMs(int rtpTimestamp) {
+        if (rtpTimestamp == Integer.MIN_VALUE) {
+            return 0;
+        }
+        if (rtspVideoBaseRtpTs == Integer.MIN_VALUE) {
+            rtspVideoBaseRtpTs = rtpTimestamp;
+        }
+        long delta90k = elapsed32(rtspVideoBaseRtpTs, rtpTimestamp);
+        long tsMs = delta90k / 90L;
+        return tsMs > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) tsMs;
+    }
+
+    private static long elapsed32(int start, int end) {
+        return ((end & 0xFFFFFFFFL) - (start & 0xFFFFFFFFL)) & 0xFFFFFFFFL;
+    }
+
+    private void seedRtspVideoParameterSetsFromSdp(String sdpText) {
+        byte[][] sets = parseSpropParameterSets(sdpText);
+        if (sets == null) {
+            return;
+        }
+        if (sets[0] != null && sets[0].length > 0) {
+            rtspSps = sets[0];
+        }
+        if (sets[1] != null && sets[1].length > 0) {
+            rtspPps = sets[1];
+        }
+        rtspFlvAccessUnitNormalizer.seedParameterSets(rtspSps, rtspPps);
+        refreshRtspVideoSequenceHeader();
+    }
+
+    private static byte[][] parseSpropParameterSets(String sdpText) {
+        if (sdpText == null || sdpText.trim().isEmpty()) {
+            return null;
+        }
+        String[] lines = sdpText.split("\r\n|\n");
+        for (String raw : lines) {
+            if (raw == null) {
+                continue;
+            }
+            String line = raw.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (!lower.startsWith("a=fmtp:")) {
+                continue;
+            }
+            int idx = lower.indexOf("sprop-parameter-sets=");
+            if (idx < 0) {
+                continue;
+            }
+            String value = line.substring(idx + "sprop-parameter-sets=".length()).trim();
+            int semicolon = value.indexOf(';');
+            if (semicolon >= 0) {
+                value = value.substring(0, semicolon).trim();
+            }
+            String[] parts = value.split(",");
+            byte[] sps = parts.length > 0 ? decodeBase64(parts[0]) : null;
+            byte[] pps = parts.length > 1 ? decodeBase64(parts[1]) : null;
+            return new byte[][]{sps, pps};
+        }
+        return null;
+    }
+
+    private static byte[] decodeBase64(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Base64.getDecoder().decode(value.trim());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
     private void relayRtmpToSubscribers(int typeId, ByteBuf payload, int timestamp, int publisherMessageStreamId) {
         List<RtmpSubscriber> snapshot = new ArrayList<RtmpSubscriber>(rtmpSubscribers);
         for (RtmpSubscriber sub : snapshot) {
@@ -548,7 +886,7 @@ public final class PublishedStream {
                     if (!containsAvccIdr(payload)) {
                         continue;
                     }
-                    ByteBuf vsh = rtmpVideoSeqHeader;
+                    ByteBuf vsh = resolveHttpFlvVideoSeqHeader();
                     if (vsh != null && vsh.isReadable()) {
                         FlvWriter.writeTag(sub.ctx, RtmpConstants.TYPE_VIDEO, 0, vsh.retainedDuplicate());
                         videoOutTcpPackets.incrementAndGet();
@@ -671,6 +1009,7 @@ public final class PublishedStream {
             frameProcessorStarted = false;
         }
         h264.reset();
+        rtspFlvAccessUnitNormalizer.close();
         for (Channel ch : subscribers) {
             ch.close();
         }
@@ -683,10 +1022,19 @@ public final class PublishedStream {
         ReferenceCountUtil.safeRelease(rtmpVideoSeqHeader);
         ReferenceCountUtil.safeRelease(rtmpAudioSeqHeader);
         ReferenceCountUtil.safeRelease(rtmpLastVideoKeyFrame);
+        ReferenceCountUtil.safeRelease(flvVideoSeqHeader);
+        ReferenceCountUtil.safeRelease(flvAudioSeqHeader);
+        ReferenceCountUtil.safeRelease(flvLastVideoKeyFrame);
         rtmpMetadata = null;
         rtmpVideoSeqHeader = null;
         rtmpAudioSeqHeader = null;
         rtmpLastVideoKeyFrame = null;
+        flvVideoSeqHeader = null;
+        flvAudioSeqHeader = null;
+        flvLastVideoKeyFrame = null;
+        rtspVideoBaseRtpTs = Integer.MIN_VALUE;
+        rtspSps = null;
+        rtspPps = null;
         rtmpAvcNalLengthSize = 4;
     }
 }
