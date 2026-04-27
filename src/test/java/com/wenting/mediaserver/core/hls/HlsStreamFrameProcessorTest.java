@@ -52,6 +52,7 @@ class HlsStreamFrameProcessorTest {
             H264RtpPacketizer packetizer = new H264RtpPacketizer();
 
             processor.onPublishStart(key, "v=0\r\n");
+            markHlsViewer(processor, "live", "cam1");
             emitAccessUnit(processor, key, packetizer, 0, new byte[][]{
                     sps(), pps(), idr()
             });
@@ -115,6 +116,7 @@ class HlsStreamFrameProcessorTest {
                     + "\r\n";
 
             processor.onPublishStart(key, sdp);
+            markHlsViewer(processor, "live", "cam_seed");
             emitAccessUnit(processor, key, packetizer, 0, new byte[][]{
                     idr()
             });
@@ -166,6 +168,7 @@ class HlsStreamFrameProcessorTest {
                     + "sizelength=13; indexlength=3; indexdeltalength=3;\r\n";
 
             processor.onPublishStart(key, sdp);
+            markHlsViewer(processor, "live", "cam_aac");
             emitAccessUnit(processor, key, packetizer, 0, new byte[][]{
                     sps(), pps(), idr()
             });
@@ -212,6 +215,7 @@ class HlsStreamFrameProcessorTest {
             HlsStreamFrameProcessor processor = new HlsStreamFrameProcessor(config);
             StreamKey key = new StreamKey("live", "cam_rtmp");
             processor.onPublishStart(key, "");
+            markHlsViewer(processor, "live", "cam_rtmp");
 
             emitRtmpVideoSeqHeader(processor, key);
             emitRtmpAacSeqHeader(processor, key);
@@ -229,6 +233,101 @@ class HlsStreamFrameProcessorTest {
             assertTrue(indexOf(first, new byte[]{0x1B, (byte) 0xE1, 0x01, (byte) 0xF0, 0x00}) >= 0);
             assertTrue(indexOf(first, new byte[]{0x0F, (byte) 0xE1, 0x02, (byte) 0xF0, 0x00}) >= 0);
             assertTrue(indexOf(first, new byte[]{(byte) 0xFF, (byte) 0xF1}) >= 0);
+        } finally {
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    void cachesRtmpSequenceHeadersBeforeViewerAndRemainsPlayable() throws Exception {
+        Path root = Files.createTempDirectory("hls-processor-rtmp-late-viewer-test");
+        try {
+            MediaServerConfig config = new MediaServerConfig(
+                    18080,
+                    1554,
+                    11935,
+                    20000,
+                    30000,
+                    true,
+                    "ffmpeg",
+                    "__wm",
+                    "127.0.0.1",
+                    512,
+                    "java",
+                    false,
+                    true,
+                    root.toString(),
+                    1,
+                    6,
+                    true);
+            HlsStreamFrameProcessor processor = new HlsStreamFrameProcessor(config);
+            StreamKey key = new StreamKey("live", "cam_rtmp_late_viewer");
+            processor.onPublishStart(key, "");
+
+            // Sequence headers arrive before first viewer request.
+            emitRtmpVideoSeqHeader(processor, key);
+            emitRtmpAacSeqHeader(processor, key);
+
+            markHlsViewer(processor, "live", "cam_rtmp_late_viewer");
+            emitRtmpVideoNalu(processor, key, 0, true, new byte[][]{idr()});
+            emitRtmpAacRaw(processor, key, 0, aacFrame());
+            emitRtmpAacRaw(processor, key, 22, aacFrame());
+            emitRtmpVideoNalu(processor, key, 1000, true, new byte[][]{idr()});
+
+            processor.onPublishStop(key);
+            processor.close();
+
+            List<Path> segments = listTsFiles(root.resolve("live").resolve("cam_rtmp_late_viewer"));
+            assertFalse(segments.isEmpty());
+            byte[] first = Files.readAllBytes(segments.get(0));
+            assertTrue(indexOf(first, new byte[]{0x00, 0x00, 0x00, 0x01, 0x67}) >= 0);
+            assertTrue(indexOf(first, new byte[]{0x00, 0x00, 0x00, 0x01, 0x68}) >= 0);
+            assertTrue(indexOf(first, new byte[]{(byte) 0xFF, (byte) 0xF1}) >= 0);
+        } finally {
+            deleteRecursively(root);
+        }
+    }
+
+    @Test
+    void doesNotGenerateSegmentsWithoutViewer() throws Exception {
+        Path root = Files.createTempDirectory("hls-processor-no-viewer-test");
+        try {
+            MediaServerConfig config = new MediaServerConfig(
+                    18080,
+                    1554,
+                    11935,
+                    20000,
+                    30000,
+                    true,
+                    "ffmpeg",
+                    "__wm",
+                    "127.0.0.1",
+                    512,
+                    "java",
+                    false,
+                    true,
+                    root.toString(),
+                    1,
+                    6,
+                    true);
+            HlsStreamFrameProcessor processor = new HlsStreamFrameProcessor(config);
+            StreamKey key = new StreamKey("live", "cam_no_viewer");
+            H264RtpPacketizer packetizer = new H264RtpPacketizer();
+
+            processor.onPublishStart(key, "v=0\r\n");
+            emitAccessUnit(processor, key, packetizer, 0, new byte[][]{
+                    sps(), pps(), idr()
+            });
+            emitAccessUnit(processor, key, packetizer, 90000, new byte[][]{
+                    idr()
+            });
+            processor.onPublishStop(key);
+            processor.close();
+
+            Path streamDir = root.resolve("live").resolve("cam_no_viewer");
+            assertTrue(Files.exists(streamDir));
+            assertFalse(Files.exists(streamDir.resolve("index.m3u8")));
+            assertTrue(listTsFiles(streamDir).isEmpty());
         } finally {
             deleteRecursively(root);
         }
@@ -287,6 +386,10 @@ class HlsStreamFrameProcessorTest {
 
     private static byte[] aacFrame() {
         return new byte[]{0x11, 0x22, 0x33, 0x44, 0x55};
+    }
+
+    private static void markHlsViewer(HlsStreamFrameProcessor processor, String app, String stream) {
+        processor.onHlsRequest(app + "/" + stream + "/index.m3u8");
     }
 
     private static void emitAacRtp(

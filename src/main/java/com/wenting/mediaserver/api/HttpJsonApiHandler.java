@@ -2,6 +2,7 @@ package com.wenting.mediaserver.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wenting.mediaserver.config.MediaServerConfig;
+import com.wenting.mediaserver.core.hls.HlsStreamFrameProcessor;
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.core.model.StreamProtocol;
 import com.wenting.mediaserver.core.publish.PublishedStream;
@@ -41,11 +42,13 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
     private final ObjectMapper mapper = new ObjectMapper();
     private final MediaServerConfig config;
     private final StreamRegistry registry;
+    private final HlsStreamFrameProcessor hlsProcessor;
     private final Path hlsRoot;
 
-    public HttpJsonApiHandler(MediaServerConfig config, StreamRegistry registry) {
+    public HttpJsonApiHandler(MediaServerConfig config, StreamRegistry registry, HlsStreamFrameProcessor hlsProcessor) {
         this.config = config;
         this.registry = registry;
+        this.hlsProcessor = hlsProcessor;
         this.hlsRoot = Paths.get(config.hlsRoot()).toAbsolutePath().normalize();
     }
 
@@ -155,6 +158,9 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
         if (rel.isEmpty()) {
             send(ctx, req, HttpResponseStatus.NOT_FOUND, ApiResponse.error(404, "hls file not found"));
             return;
+        }
+        if (hlsProcessor != null) {
+            hlsProcessor.onHlsRequest(rel);
         }
         Path file = hlsRoot.resolve(rel).normalize();
         if (!file.startsWith(hlsRoot)) {

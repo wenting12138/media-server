@@ -208,6 +208,17 @@ final class HlsStreamSession implements AutoCloseable {
         lastMuxPts90k = pts90k;
     }
 
+    synchronized void onNoViewer() {
+        if (currentSegment == null) {
+            return;
+        }
+        int closingPts = lastMuxPts90k;
+        if (closingPts == Integer.MIN_VALUE) {
+            closingPts = currentSegmentStartPts90k + segmentDuration90k;
+        }
+        finalizeCurrentSegment(closingPts);
+    }
+
     @Override
     public synchronized void close() {
         try {

@@ -72,7 +72,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(new HttpServerCodec());
                         ch.pipeline().addLast(new HttpObjectAggregator(65536));
-                        ch.pipeline().addLast(new HttpJsonApiHandler(config, registry));
+                        ch.pipeline().addLast(new HttpJsonApiHandler(config, registry, hlsProcessor));
                     }
                 })
                 .option(ChannelOption.SO_BACKLOG, 512)
