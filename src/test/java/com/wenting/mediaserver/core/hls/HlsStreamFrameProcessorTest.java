@@ -134,6 +134,59 @@ class HlsStreamFrameProcessorTest {
         }
     }
 
+    @Test
+    void muxesAacAudioIntoTsWhenSdpContainsMpeg4Generic() throws Exception {
+        Path root = Files.createTempDirectory("hls-processor-aac-test");
+        try {
+            MediaServerConfig config = new MediaServerConfig(
+                    18080,
+                    1554,
+                    11935,
+                    20000,
+                    30000,
+                    true,
+                    "ffmpeg",
+                    "__wm",
+                    "127.0.0.1",
+                    512,
+                    "java",
+                    false,
+                    true,
+                    root.toString(),
+                    1,
+                    6,
+                    true);
+            HlsStreamFrameProcessor processor = new HlsStreamFrameProcessor(config);
+            StreamKey key = new StreamKey("live", "cam_aac");
+            H264RtpPacketizer packetizer = new H264RtpPacketizer();
+            String sdp = "v=0\r\n"
+                    + "m=audio 0 RTP/AVP 97\r\n"
+                    + "a=rtpmap:97 MPEG4-GENERIC/48000/2\r\n"
+                    + "a=fmtp:97 streamtype=5; profile-level-id=15; mode=AAC-hbr; config=1190; "
+                    + "sizelength=13; indexlength=3; indexdeltalength=3;\r\n";
+
+            processor.onPublishStart(key, sdp);
+            emitAccessUnit(processor, key, packetizer, 0, new byte[][]{
+                    sps(), pps(), idr()
+            });
+            emitAacRtp(processor, key, 97, 0, aacFrame());
+            emitAacRtp(processor, key, 97, 1024, aacFrame());
+            emitAccessUnit(processor, key, packetizer, 90000, new byte[][]{
+                    idr()
+            });
+            processor.onPublishStop(key);
+            processor.close();
+
+            List<Path> segments = listTsFiles(root.resolve("live").resolve("cam_aac"));
+            assertFalse(segments.isEmpty());
+            byte[] first = Files.readAllBytes(segments.get(0));
+            assertTrue(indexOf(first, new byte[]{0x0F, (byte) 0xE1, 0x02, (byte) 0xF0, 0x00}) >= 0);
+            assertTrue(indexOf(first, new byte[]{(byte) 0xFF, (byte) 0xF1}) >= 0);
+        } finally {
+            deleteRecursively(root);
+        }
+    }
+
     private static void emitAccessUnit(
             HlsStreamFrameProcessor processor,
             StreamKey key,
@@ -183,6 +236,42 @@ class HlsStreamFrameProcessorTest {
 
     private static byte[] pFrame() {
         return new byte[]{0x41, (byte) 0x9A, 0x22, 0x11};
+    }
+
+    private static byte[] aacFrame() {
+        return new byte[]{0x11, 0x22, 0x33, 0x44, 0x55};
+    }
+
+    private static void emitAacRtp(
+            HlsStreamFrameProcessor processor,
+            StreamKey key,
+            int payloadType,
+            int timestamp,
+            byte[] rawAac) {
+        ByteBuf rtp = Unpooled.buffer(12 + 2 + 2 + rawAac.length);
+        rtp.writeByte(0x80);
+        rtp.writeByte(payloadType & 0x7F);
+        rtp.writeShort(1);
+        rtp.writeInt(timestamp);
+        rtp.writeInt(0x12345678);
+        rtp.writeShort(16);
+        int auHeader = ((rawAac.length & 0x1FFF) << 3);
+        rtp.writeShort(auHeader);
+        rtp.writeBytes(rawAac);
+        EncodedMediaPacket packet = new EncodedMediaPacket(
+                EncodedMediaPacket.SourceProtocol.RTSP,
+                EncodedMediaPacket.TrackType.AUDIO,
+                EncodedMediaPacket.CodecType.UNKNOWN,
+                EncodedMediaPacket.PayloadFormat.RTP_PACKET,
+                0,
+                1,
+                rtp.retainedDuplicate());
+        try {
+            processor.onPacket(key, packet);
+        } finally {
+            packet.release();
+            rtp.release();
+        }
     }
 
     private static List<Path> listTsFiles(Path dir) throws IOException {
