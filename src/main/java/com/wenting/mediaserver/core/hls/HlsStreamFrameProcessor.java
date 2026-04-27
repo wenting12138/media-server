@@ -93,17 +93,29 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
         if (session == null) {
             return;
         }
-        if (packet.sourceProtocol() != EncodedMediaPacket.SourceProtocol.RTSP
-                || packet.payloadFormat() != EncodedMediaPacket.PayloadFormat.RTP_PACKET) {
+        if (packet.sourceProtocol() == EncodedMediaPacket.SourceProtocol.RTSP
+                && packet.payloadFormat() == EncodedMediaPacket.PayloadFormat.RTP_PACKET) {
+            if (packet.trackType() == EncodedMediaPacket.TrackType.VIDEO
+                    && packet.codecType() == EncodedMediaPacket.CodecType.H264) {
+                session.onVideoRtpPacket(packet.payload());
+                return;
+            }
+            if (packet.trackType() == EncodedMediaPacket.TrackType.AUDIO) {
+                session.onAudioRtpPacket(packet.payload(), System.nanoTime());
+            }
             return;
         }
-        if (packet.trackType() == EncodedMediaPacket.TrackType.VIDEO
-                && packet.codecType() == EncodedMediaPacket.CodecType.H264) {
-            session.onVideoRtpPacket(packet.payload());
-            return;
-        }
-        if (packet.trackType() == EncodedMediaPacket.TrackType.AUDIO) {
-            session.onAudioRtpPacket(packet.payload(), System.nanoTime());
+        if (packet.sourceProtocol() == EncodedMediaPacket.SourceProtocol.RTMP
+                && packet.payloadFormat() == EncodedMediaPacket.PayloadFormat.RTMP_TAG) {
+            if (packet.trackType() == EncodedMediaPacket.TrackType.VIDEO
+                    && packet.codecType() == EncodedMediaPacket.CodecType.H264) {
+                session.onRtmpVideoTag(packet.payload(), packet.timestamp());
+                return;
+            }
+            if (packet.trackType() == EncodedMediaPacket.TrackType.AUDIO
+                    && packet.codecType() == EncodedMediaPacket.CodecType.AAC) {
+                session.onRtmpAudioTag(packet.payload(), packet.timestamp());
+            }
         }
     }
 
@@ -132,16 +144,20 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
         private final Path streamDir;
         private final Path playlistPath;
         private final RtpH264AccessUnitNormalizer normalizer = new RtpH264AccessUnitNormalizer();
-        private final AacConfig aacConfig;
         private final Deque<SegmentInfo> segments = new ArrayDeque<SegmentInfo>();
+        private AacConfig activeAacConfig;
         private SegmentWriter currentSegment;
         private int nextSequence;
         private int currentSegmentStartPts90k;
         private int lastMuxPts90k;
         private int firstVideoRtpTs90k = Integer.MIN_VALUE;
+        private int firstVideoRtmpTimestampMs = Integer.MIN_VALUE;
         private long videoStartNano = -1L;
         private int audioBaseRtpTs = Integer.MIN_VALUE;
         private long audioBasePts90k = Long.MIN_VALUE;
+        private int rtmpAvcNalLengthSize = 4;
+        private byte[] rtmpSps;
+        private byte[] rtmpPps;
 
         private Session(StreamKey key, String sdpText) {
             this.key = key;
@@ -165,10 +181,10 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
                         sdpHints.sps == null ? 0 : sdpHints.sps.length,
                         sdpHints.pps == null ? 0 : sdpHints.pps.length);
             }
-            this.aacConfig = sdpHints == null ? null : sdpHints.aacConfig;
-            if (aacConfig != null) {
+            this.activeAacConfig = sdpHints == null ? null : sdpHints.aacConfig;
+            if (activeAacConfig != null) {
                 log.info("HLS AAC enabled stream={} pt={} clock={} ch={}",
-                        key.path(), aacConfig.payloadType, aacConfig.clockRate, aacConfig.channelConfig);
+                        key.path(), activeAacConfig.payloadType, activeAacConfig.clockRate, activeAacConfig.channelConfig);
             }
         }
 
@@ -194,40 +210,29 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
                 return;
             }
             int pts90k = mapVideoPts90k(accessUnit.timestamp90k());
-            if (currentSegment == null) {
-                if (!accessUnit.keyFrame()) {
-                    return;
-                }
-                startNewSegment(pts90k);
-            } else if (accessUnit.keyFrame() && elapsed90k(currentSegmentStartPts90k, pts90k) >= segmentDuration90k) {
-                finalizeCurrentSegment(pts90k);
-                startNewSegment(pts90k);
-            }
-            if (currentSegment == null) {
-                return;
-            }
-            currentSegment.writeVideoAccessUnit(accessUnit.annexB(), pts90k);
-            lastMuxPts90k = pts90k;
+            byte[] accessUnitBytes = new byte[accessUnit.annexB().readableBytes()];
+            accessUnit.annexB().getBytes(accessUnit.annexB().readerIndex(), accessUnitBytes);
+            ingestVideoAccessUnit(accessUnitBytes, pts90k, accessUnit.keyFrame());
         }
 
         private synchronized void onAudioRtpPacket(ByteBuf rtpPacket, long arrivalNano) {
-            if (aacConfig == null || currentSegment == null || rtpPacket == null || !rtpPacket.isReadable()) {
+            if (activeAacConfig == null || currentSegment == null || rtpPacket == null || !rtpPacket.isReadable()) {
                 return;
             }
             int payloadType = readRtpPayloadType(rtpPacket);
-            if (payloadType >= 0 && aacConfig.payloadType >= 0 && payloadType != aacConfig.payloadType) {
+            if (payloadType >= 0 && activeAacConfig.payloadType >= 0 && payloadType != activeAacConfig.payloadType) {
                 return;
             }
             int rtpTs = readRtpTimestamp(rtpPacket);
             if (rtpTs == Integer.MIN_VALUE) {
                 return;
             }
-            List<byte[]> frames = extractAacAccessUnits(rtpPacket, aacConfig);
+            List<byte[]> frames = extractAacAccessUnits(rtpPacket, activeAacConfig);
             if (frames.isEmpty()) {
                 return;
             }
             long basePts90k = mapAudioPts90k(rtpTs, arrivalNano);
-            int frameDuration90k = aacConfig.frameDuration90k();
+            int frameDuration90k = activeAacConfig.frameDuration90k();
             for (int i = 0; i < frames.size(); i++) {
                 long pts = (basePts90k + (long) i * frameDuration90k) & 0xFFFFFFFFL;
                 currentSegment.writeAudioFrame(frames.get(i), (int) pts);
@@ -235,10 +240,78 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
             }
         }
 
+        private synchronized void onRtmpVideoTag(ByteBuf payload, int timestampMs) {
+            if (payload == null || payload.readableBytes() < 5) {
+                return;
+            }
+            int ri = payload.readerIndex();
+            int first = payload.getUnsignedByte(ri);
+            int frameType = (first >> 4) & 0x0F;
+            int codecId = first & 0x0F;
+            if (codecId != 7) {
+                return;
+            }
+            int avcPacketType = payload.getUnsignedByte(ri + 1);
+            if (avcPacketType == 0) {
+                parseRtmpAvcSequenceHeader(payload);
+                return;
+            }
+            if (avcPacketType != 1) {
+                return;
+            }
+            int compositionTime = readSigned24(payload.getUnsignedByte(ri + 2), payload.getUnsignedByte(ri + 3), payload.getUnsignedByte(ri + 4));
+            int ptsMs = timestampMs + compositionTime;
+            if (ptsMs < 0) {
+                ptsMs = 0;
+            }
+            RtmpAnnexbFrame frame = decodeRtmpAvccFrame(payload, frameType == 1);
+            if (frame == null || frame.annexb == null || frame.annexb.length == 0) {
+                return;
+            }
+            int pts90k = mapVideoPts90kFromMs(ptsMs);
+            boolean keyFrame = frameType == 1 && frame.hasIdr;
+            ingestVideoAccessUnit(frame.annexb, pts90k, keyFrame);
+        }
+
+        private synchronized void onRtmpAudioTag(ByteBuf payload, int timestampMs) {
+            if (payload == null || payload.readableBytes() < 2) {
+                return;
+            }
+            int ri = payload.readerIndex();
+            int soundHeader = payload.getUnsignedByte(ri);
+            int soundFormat = (soundHeader >> 4) & 0x0F;
+            if (soundFormat != 10) {
+                return;
+            }
+            int aacPacketType = payload.getUnsignedByte(ri + 1);
+            if (aacPacketType == 0) {
+                AacConfig parsed = parseAacConfigFromAsc(payload, ri + 2, payload.readableBytes() - 2);
+                if (parsed != null) {
+                    activeAacConfig = parsed;
+                    log.info("HLS AAC enabled(stream={} source=rtmp) clock={} ch={}",
+                            key.path(), activeAacConfig.clockRate, activeAacConfig.channelConfig);
+                }
+                return;
+            }
+            if (aacPacketType != 1 || activeAacConfig == null || currentSegment == null) {
+                return;
+            }
+            int dataOffset = ri + 2;
+            int dataLen = payload.readableBytes() - 2;
+            if (dataLen <= 0) {
+                return;
+            }
+            byte[] raw = new byte[dataLen];
+            payload.getBytes(dataOffset, raw);
+            int pts90k = mapAudioPts90kFromMs(timestampMs);
+            currentSegment.writeAudioFrame(raw, pts90k);
+            lastMuxPts90k = pts90k;
+        }
+
         private void startNewSegment(int pts90k) {
             String segmentFile = String.format(Locale.US, "seg_%06d.ts", nextSequence);
             Path segmentPath = streamDir.resolve(segmentFile);
-            currentSegment = new SegmentWriter(nextSequence, segmentFile, segmentPath, aacConfig);
+            currentSegment = new SegmentWriter(nextSequence, segmentFile, segmentPath, activeAacConfig);
             currentSegmentStartPts90k = pts90k;
             lastMuxPts90k = pts90k;
             if (videoStartNano < 0L) {
@@ -345,8 +418,156 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
                 audioBasePts90k = wallDelta90k;
             }
             long deltaAudio = elapsed90k(audioBaseRtpTs, rtpTs);
-            long delta90k = (deltaAudio * CLOCK_90K) / Math.max(1, aacConfig.clockRate);
+            long delta90k = (deltaAudio * CLOCK_90K) / Math.max(1, activeAacConfig == null ? 48000 : activeAacConfig.clockRate);
             return (audioBasePts90k + delta90k) & 0xFFFFFFFFL;
+        }
+
+        private int mapVideoPts90kFromMs(int timestampMs) {
+            if (firstVideoRtmpTimestampMs == Integer.MIN_VALUE) {
+                firstVideoRtmpTimestampMs = timestampMs;
+            }
+            int deltaMs = timestampMs - firstVideoRtmpTimestampMs;
+            if (deltaMs < 0) {
+                deltaMs = 0;
+            }
+            return (int) (((long) deltaMs * 90L) & 0xFFFFFFFFL);
+        }
+
+        private int mapAudioPts90kFromMs(int timestampMs) {
+            if (firstVideoRtmpTimestampMs == Integer.MIN_VALUE) {
+                return (int) (((long) Math.max(0, timestampMs) * 90L) & 0xFFFFFFFFL);
+            }
+            int deltaMs = timestampMs - firstVideoRtmpTimestampMs;
+            if (deltaMs < 0) {
+                deltaMs = 0;
+            }
+            return (int) (((long) deltaMs * 90L) & 0xFFFFFFFFL);
+        }
+
+        private void parseRtmpAvcSequenceHeader(ByteBuf payload) {
+            int base = payload.readerIndex() + 5;
+            int end = payload.readerIndex() + payload.readableBytes();
+            if (base + 6 > end) {
+                return;
+            }
+            int lengthSizeMinusOne = payload.getUnsignedByte(base + 4) & 0x03;
+            rtmpAvcNalLengthSize = lengthSizeMinusOne + 1;
+            int off = base + 5;
+            int numSps = payload.getUnsignedByte(off) & 0x1F;
+            off++;
+            byte[] sps = null;
+            byte[] pps = null;
+            for (int i = 0; i < numSps; i++) {
+                if (off + 2 > end) {
+                    return;
+                }
+                int len = ((payload.getUnsignedByte(off) << 8) | payload.getUnsignedByte(off + 1));
+                off += 2;
+                if (len <= 0 || off + len > end) {
+                    return;
+                }
+                byte[] nalu = new byte[len];
+                payload.getBytes(off, nalu);
+                if (i == 0) {
+                    sps = nalu;
+                }
+                off += len;
+            }
+            if (off + 1 > end) {
+                return;
+            }
+            int numPps = payload.getUnsignedByte(off);
+            off++;
+            for (int i = 0; i < numPps; i++) {
+                if (off + 2 > end) {
+                    return;
+                }
+                int len = ((payload.getUnsignedByte(off) << 8) | payload.getUnsignedByte(off + 1));
+                off += 2;
+                if (len <= 0 || off + len > end) {
+                    return;
+                }
+                byte[] nalu = new byte[len];
+                payload.getBytes(off, nalu);
+                if (i == 0) {
+                    pps = nalu;
+                }
+                off += len;
+            }
+            if (sps != null) {
+                rtmpSps = sps;
+            }
+            if (pps != null) {
+                rtmpPps = pps;
+            }
+        }
+
+        private RtmpAnnexbFrame decodeRtmpAvccFrame(ByteBuf payload, boolean keyFrame) {
+            int off = payload.readerIndex() + 5;
+            int end = payload.readerIndex() + payload.readableBytes();
+            int nalLengthSize = rtmpAvcNalLengthSize <= 0 ? 4 : rtmpAvcNalLengthSize;
+            List<byte[]> nals = new ArrayList<byte[]>();
+            boolean hasSps = false;
+            boolean hasPps = false;
+            boolean hasIdr = false;
+            while (off + nalLengthSize <= end) {
+                int nalLen = 0;
+                for (int i = 0; i < nalLengthSize; i++) {
+                    nalLen = (nalLen << 8) | payload.getUnsignedByte(off + i);
+                }
+                off += nalLengthSize;
+                if (nalLen <= 0 || off + nalLen > end) {
+                    break;
+                }
+                byte[] nalu = new byte[nalLen];
+                payload.getBytes(off, nalu);
+                nals.add(nalu);
+                int nalType = nalu[0] & 0x1F;
+                if (nalType == 7) {
+                    hasSps = true;
+                } else if (nalType == 8) {
+                    hasPps = true;
+                } else if (nalType == 5) {
+                    hasIdr = true;
+                }
+                off += nalLen;
+            }
+            if (nals.isEmpty()) {
+                return null;
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream(payload.readableBytes() * 2);
+            if (keyFrame && !hasSps && rtmpSps != null) {
+                writeAnnexbNal(out, rtmpSps);
+                hasSps = true;
+            }
+            if (keyFrame && !hasPps && rtmpPps != null) {
+                writeAnnexbNal(out, rtmpPps);
+                hasPps = true;
+            }
+            for (byte[] nalu : nals) {
+                writeAnnexbNal(out, nalu);
+            }
+            return new RtmpAnnexbFrame(out.toByteArray(), hasIdr, hasSps, hasPps);
+        }
+
+        private void ingestVideoAccessUnit(byte[] annexb, int pts90k, boolean keyFrame) {
+            if (annexb == null || annexb.length == 0) {
+                return;
+            }
+            if (currentSegment == null) {
+                if (!keyFrame) {
+                    return;
+                }
+                startNewSegment(pts90k);
+            } else if (keyFrame && elapsed90k(currentSegmentStartPts90k, pts90k) >= segmentDuration90k) {
+                finalizeCurrentSegment(pts90k);
+                startNewSegment(pts90k);
+            }
+            if (currentSegment == null) {
+                return;
+            }
+            currentSegment.writeVideoAccessUnit(annexb, pts90k);
+            lastMuxPts90k = pts90k;
         }
 
         private synchronized void close() {
@@ -418,6 +639,17 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
                 byte[] accessUnit = new byte[annexbAccessUnit.readableBytes()];
                 annexbAccessUnit.getBytes(annexbAccessUnit.readerIndex(), accessUnit);
                 muxer.writeH264AccessUnit(out, accessUnit, pts90k & 0xFFFFFFFFL);
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to write HLS segment " + path, e);
+            }
+        }
+
+        private void writeVideoAccessUnit(byte[] annexbAccessUnit, int pts90k) {
+            if (closed || annexbAccessUnit == null || annexbAccessUnit.length == 0) {
+                return;
+            }
+            try {
+                muxer.writeH264AccessUnit(out, annexbAccessUnit, pts90k & 0xFFFFFFFFL);
             } catch (IOException e) {
                 throw new IllegalStateException("Failed to write HLS segment " + path, e);
             }
@@ -671,6 +903,70 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
 
     private static long elapsed90k(int startPts90k, int endPts90k) {
         return ((endPts90k & 0xFFFFFFFFL) - (startPts90k & 0xFFFFFFFFL)) & 0xFFFFFFFFL;
+    }
+
+    private static int readSigned24(int b0, int b1, int b2) {
+        int value = ((b0 & 0xFF) << 16) | ((b1 & 0xFF) << 8) | (b2 & 0xFF);
+        if ((value & 0x800000) != 0) {
+            value |= 0xFF000000;
+        }
+        return value;
+    }
+
+    private static void writeAnnexbNal(ByteArrayOutputStream out, byte[] nalu) {
+        if (out == null || nalu == null || nalu.length == 0) {
+            return;
+        }
+        out.write(0x00);
+        out.write(0x00);
+        out.write(0x00);
+        out.write(0x01);
+        out.write(nalu, 0, nalu.length);
+    }
+
+    private static AacConfig parseAacConfigFromAsc(ByteBuf payload, int offset, int length) {
+        if (payload == null || length < 2) {
+            return null;
+        }
+        int end = payload.readerIndex() + payload.readableBytes();
+        if (offset < payload.readerIndex() || offset + 2 > end) {
+            return null;
+        }
+        int bits = ((payload.getUnsignedByte(offset) & 0xFF) << 8)
+                | (payload.getUnsignedByte(offset + 1) & 0xFF);
+        int audioObjectType = (bits >> 11) & 0x1F;
+        int sampleRateIndex = (bits >> 7) & 0x0F;
+        int channelConfig = (bits >> 3) & 0x0F;
+        if (audioObjectType <= 0) {
+            audioObjectType = 2;
+        }
+        if (sampleRateIndex < 0 || sampleRateIndex > 12) {
+            sampleRateIndex = 3;
+        }
+        if (channelConfig <= 0) {
+            channelConfig = 2;
+        }
+        int sampleRate = sampleRateFromIndex(sampleRateIndex);
+        return new AacConfig(
+                -1,
+                sampleRate,
+                channelConfig,
+                audioObjectType,
+                sampleRateIndex,
+                13,
+                3,
+                3);
+    }
+
+    private static int sampleRateFromIndex(int idx) {
+        final int[] rates = new int[]{
+                96000, 88200, 64000, 48000, 44100, 32000,
+                24000, 22050, 16000, 12000, 11025, 8000, 7350
+        };
+        if (idx < 0 || idx >= rates.length) {
+            return 48000;
+        }
+        return rates[idx];
     }
 
     private static SdpHints parseSdpHints(String sdpText) {
@@ -984,6 +1280,20 @@ public final class HlsStreamFrameProcessor implements StreamFrameProcessor, Auto
             this.sps = sps;
             this.pps = pps;
             this.aacConfig = aacConfig;
+        }
+    }
+
+    private static final class RtmpAnnexbFrame {
+        private final byte[] annexb;
+        private final boolean hasIdr;
+        private final boolean hasSps;
+        private final boolean hasPps;
+
+        private RtmpAnnexbFrame(byte[] annexb, boolean hasIdr, boolean hasSps, boolean hasPps) {
+            this.annexb = annexb;
+            this.hasIdr = hasIdr;
+            this.hasSps = hasSps;
+            this.hasPps = hasPps;
         }
     }
 

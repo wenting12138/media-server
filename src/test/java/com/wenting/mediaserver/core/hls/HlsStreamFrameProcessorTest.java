@@ -187,6 +187,53 @@ class HlsStreamFrameProcessorTest {
         }
     }
 
+    @Test
+    void muxesRtmpH264AacIntoTs() throws Exception {
+        Path root = Files.createTempDirectory("hls-processor-rtmp-test");
+        try {
+            MediaServerConfig config = new MediaServerConfig(
+                    18080,
+                    1554,
+                    11935,
+                    20000,
+                    30000,
+                    true,
+                    "ffmpeg",
+                    "__wm",
+                    "127.0.0.1",
+                    512,
+                    "java",
+                    false,
+                    true,
+                    root.toString(),
+                    1,
+                    6,
+                    true);
+            HlsStreamFrameProcessor processor = new HlsStreamFrameProcessor(config);
+            StreamKey key = new StreamKey("live", "cam_rtmp");
+            processor.onPublishStart(key, "");
+
+            emitRtmpVideoSeqHeader(processor, key);
+            emitRtmpAacSeqHeader(processor, key);
+            emitRtmpVideoNalu(processor, key, 0, true, new byte[][]{idr()});
+            emitRtmpAacRaw(processor, key, 0, aacFrame());
+            emitRtmpAacRaw(processor, key, 22, aacFrame());
+            emitRtmpVideoNalu(processor, key, 1000, true, new byte[][]{idr()});
+
+            processor.onPublishStop(key);
+            processor.close();
+
+            List<Path> segments = listTsFiles(root.resolve("live").resolve("cam_rtmp"));
+            assertFalse(segments.isEmpty());
+            byte[] first = Files.readAllBytes(segments.get(0));
+            assertTrue(indexOf(first, new byte[]{0x1B, (byte) 0xE1, 0x01, (byte) 0xF0, 0x00}) >= 0);
+            assertTrue(indexOf(first, new byte[]{0x0F, (byte) 0xE1, 0x02, (byte) 0xF0, 0x00}) >= 0);
+            assertTrue(indexOf(first, new byte[]{(byte) 0xFF, (byte) 0xF1}) >= 0);
+        } finally {
+            deleteRecursively(root);
+        }
+    }
+
     private static void emitAccessUnit(
             HlsStreamFrameProcessor processor,
             StreamKey key,
@@ -271,6 +318,92 @@ class HlsStreamFrameProcessorTest {
         } finally {
             packet.release();
             rtp.release();
+        }
+    }
+
+    private static void emitRtmpVideoSeqHeader(HlsStreamFrameProcessor processor, StreamKey key) {
+        byte[] sps = sps();
+        byte[] pps = pps();
+        ByteBuf tag = Unpooled.buffer(5 + 11 + sps.length + pps.length);
+        tag.writeByte(0x17);
+        tag.writeByte(0x00);
+        tag.writeByte(0x00);
+        tag.writeByte(0x00);
+        tag.writeByte(0x00);
+        tag.writeByte(0x01);
+        tag.writeByte(sps[1] & 0xFF);
+        tag.writeByte(sps[2] & 0xFF);
+        tag.writeByte(sps[3] & 0xFF);
+        tag.writeByte(0xFF);
+        tag.writeByte(0xE1);
+        tag.writeShort(sps.length);
+        tag.writeBytes(sps);
+        tag.writeByte(0x01);
+        tag.writeShort(pps.length);
+        tag.writeBytes(pps);
+        emitRtmpPacket(processor, key, EncodedMediaPacket.TrackType.VIDEO, EncodedMediaPacket.CodecType.H264, 0, tag);
+    }
+
+    private static void emitRtmpVideoNalu(
+            HlsStreamFrameProcessor processor,
+            StreamKey key,
+            int timestampMs,
+            boolean keyFrame,
+            byte[][] nals) {
+        int size = 5;
+        for (byte[] nal : nals) {
+            size += 4 + nal.length;
+        }
+        ByteBuf tag = Unpooled.buffer(size);
+        tag.writeByte(keyFrame ? 0x17 : 0x27);
+        tag.writeByte(0x01);
+        tag.writeByte(0x00);
+        tag.writeByte(0x00);
+        tag.writeByte(0x00);
+        for (byte[] nal : nals) {
+            tag.writeInt(nal.length);
+            tag.writeBytes(nal);
+        }
+        emitRtmpPacket(processor, key, EncodedMediaPacket.TrackType.VIDEO, EncodedMediaPacket.CodecType.H264, timestampMs, tag);
+    }
+
+    private static void emitRtmpAacSeqHeader(HlsStreamFrameProcessor processor, StreamKey key) {
+        ByteBuf tag = Unpooled.buffer(4);
+        tag.writeByte(0xAF);
+        tag.writeByte(0x00);
+        tag.writeByte(0x11);
+        tag.writeByte(0x90);
+        emitRtmpPacket(processor, key, EncodedMediaPacket.TrackType.AUDIO, EncodedMediaPacket.CodecType.AAC, 0, tag);
+    }
+
+    private static void emitRtmpAacRaw(HlsStreamFrameProcessor processor, StreamKey key, int timestampMs, byte[] rawAac) {
+        ByteBuf tag = Unpooled.buffer(2 + rawAac.length);
+        tag.writeByte(0xAF);
+        tag.writeByte(0x01);
+        tag.writeBytes(rawAac);
+        emitRtmpPacket(processor, key, EncodedMediaPacket.TrackType.AUDIO, EncodedMediaPacket.CodecType.AAC, timestampMs, tag);
+    }
+
+    private static void emitRtmpPacket(
+            HlsStreamFrameProcessor processor,
+            StreamKey key,
+            EncodedMediaPacket.TrackType track,
+            EncodedMediaPacket.CodecType codec,
+            int timestampMs,
+            ByteBuf payload) {
+        EncodedMediaPacket packet = new EncodedMediaPacket(
+                EncodedMediaPacket.SourceProtocol.RTMP,
+                track,
+                codec,
+                EncodedMediaPacket.PayloadFormat.RTMP_TAG,
+                timestampMs,
+                1,
+                payload.retainedDuplicate());
+        try {
+            processor.onPacket(key, packet);
+        } finally {
+            packet.release();
+            payload.release();
         }
     }
 
