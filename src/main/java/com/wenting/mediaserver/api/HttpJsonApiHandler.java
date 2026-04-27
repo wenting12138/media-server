@@ -19,6 +19,9 @@ import io.netty.handler.codec.http.HttpVersion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -34,10 +37,12 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
     private final ObjectMapper mapper = new ObjectMapper();
     private final MediaServerConfig config;
     private final StreamRegistry registry;
+    private final Path hlsRoot;
 
     public HttpJsonApiHandler(MediaServerConfig config, StreamRegistry registry) {
         this.config = config;
         this.registry = registry;
+        this.hlsRoot = Paths.get(config.hlsRoot()).toAbsolutePath().normalize();
     }
 
     @Override
@@ -55,6 +60,10 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
         String uri = req.uri();
         int q = uri.indexOf('?');
         String path = q >= 0 ? uri.substring(0, q) : uri;
+        if (path.startsWith("/hls/")) {
+            serveHlsFile(ctx, req, path);
+            return;
+        }
 
         try {
             if ("/index/api/getServerConfig".equals(path)) {
@@ -82,6 +91,11 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
         data.put("javaVisibleWatermarkEnabled", config.javaVisibleWatermarkEnabled());
         data.put("transcodeSuffix", config.transcodeOutputSuffix());
         data.put("transcodeInputHost", config.transcodeInputHost());
+        data.put("hlsEnabled", config.hlsEnabled());
+        data.put("hlsRoot", config.hlsRoot());
+        data.put("hlsSegmentSeconds", config.hlsSegmentSeconds());
+        data.put("hlsListSize", config.hlsListSize());
+        data.put("hlsDeleteSegments", config.hlsDeleteSegments());
         data.put("version", config.version());
         data.put("serverId", config.serverId());
         return ApiResponse.ok(data);
@@ -121,5 +135,57 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
                 }
             }
         });
+    }
+
+    private void serveHlsFile(ChannelHandlerContext ctx, FullHttpRequest req, String path) throws Exception {
+        if (!config.hlsEnabled()) {
+            send(ctx, req, HttpResponseStatus.NOT_FOUND, ApiResponse.error(404, "hls disabled"));
+            return;
+        }
+        String rel = path.substring("/hls/".length());
+        if (rel.isEmpty()) {
+            send(ctx, req, HttpResponseStatus.NOT_FOUND, ApiResponse.error(404, "hls file not found"));
+            return;
+        }
+        Path file = hlsRoot.resolve(rel).normalize();
+        if (!file.startsWith(hlsRoot)) {
+            send(ctx, req, HttpResponseStatus.FORBIDDEN, ApiResponse.error(403, "forbidden"));
+            return;
+        }
+        if (!Files.exists(file) || !Files.isRegularFile(file)) {
+            send(ctx, req, HttpResponseStatus.NOT_FOUND, ApiResponse.error(404, "hls file not found"));
+            return;
+        }
+        byte[] bytes = Files.readAllBytes(file);
+        FullHttpResponse resp = new DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1,
+                HttpResponseStatus.OK,
+                Unpooled.wrappedBuffer(bytes));
+        resp.headers().set(HttpHeaderNames.CONTENT_TYPE, hlsContentType(file));
+        resp.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, bytes.length);
+
+        boolean keepAlive = HttpUtil.isKeepAlive(req);
+        if (keepAlive) {
+            resp.headers().set(HttpHeaderNames.CONNECTION, "keep-alive");
+        }
+        ctx.writeAndFlush(resp).addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(io.netty.channel.ChannelFuture future) {
+                if (!keepAlive) {
+                    future.channel().close();
+                }
+            }
+        });
+    }
+
+    private String hlsContentType(Path file) {
+        String name = file.getFileName().toString().toLowerCase();
+        if (name.endsWith(".m3u8")) {
+            return "application/vnd.apple.mpegurl";
+        }
+        if (name.endsWith(".ts")) {
+            return "video/mp2t";
+        }
+        return "application/octet-stream";
     }
 }

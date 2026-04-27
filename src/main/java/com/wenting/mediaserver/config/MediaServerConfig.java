@@ -17,6 +17,11 @@ public final class MediaServerConfig {
     private static final int DEFAULT_TRANSCODE_QUEUE_SIZE = 2048;
     private static final String DEFAULT_RTMP_TRANSCODER = "java";
     private static final boolean DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED = true;
+    private static final boolean DEFAULT_HLS_ENABLED = true;
+    private static final String DEFAULT_HLS_ROOT = "hls";
+    private static final int DEFAULT_HLS_SEGMENT_SECONDS = 2;
+    private static final int DEFAULT_HLS_LIST_SIZE = 6;
+    private static final boolean DEFAULT_HLS_DELETE_SEGMENTS = true;
 
     private final int httpPort;
     private final int rtspPort;
@@ -30,6 +35,11 @@ public final class MediaServerConfig {
     private final int transcodeQueueSize;
     private final String rtmpTranscoder;
     private final boolean javaVisibleWatermarkEnabled;
+    private final boolean hlsEnabled;
+    private final String hlsRoot;
+    private final int hlsSegmentSeconds;
+    private final int hlsListSize;
+    private final boolean hlsDeleteSegments;
 
     public MediaServerConfig(int httpPort, int rtspPort, int rtmpPort, int rtpPortMin, int rtpPortMax) {
         this(
@@ -44,7 +54,12 @@ public final class MediaServerConfig {
                 DEFAULT_TRANSCODE_INPUT_HOST,
                 DEFAULT_TRANSCODE_QUEUE_SIZE,
                 DEFAULT_RTMP_TRANSCODER,
-                DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED);
+                DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED,
+                DEFAULT_HLS_ENABLED,
+                DEFAULT_HLS_ROOT,
+                DEFAULT_HLS_SEGMENT_SECONDS,
+                DEFAULT_HLS_LIST_SIZE,
+                DEFAULT_HLS_DELETE_SEGMENTS);
     }
 
     public MediaServerConfig(
@@ -71,7 +86,12 @@ public final class MediaServerConfig {
                 transcodeInputHost,
                 transcodeQueueSize,
                 rtmpTranscoder,
-                DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED);
+                DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED,
+                DEFAULT_HLS_ENABLED,
+                DEFAULT_HLS_ROOT,
+                DEFAULT_HLS_SEGMENT_SECONDS,
+                DEFAULT_HLS_LIST_SIZE,
+                DEFAULT_HLS_DELETE_SEGMENTS);
     }
 
     public MediaServerConfig(
@@ -87,6 +107,44 @@ public final class MediaServerConfig {
             int transcodeQueueSize,
             String rtmpTranscoder,
             boolean javaVisibleWatermarkEnabled) {
+        this(
+                httpPort,
+                rtspPort,
+                rtmpPort,
+                rtpPortMin,
+                rtpPortMax,
+                transcodeEnabled,
+                ffmpegBin,
+                transcodeOutputSuffix,
+                transcodeInputHost,
+                transcodeQueueSize,
+                rtmpTranscoder,
+                javaVisibleWatermarkEnabled,
+                DEFAULT_HLS_ENABLED,
+                DEFAULT_HLS_ROOT,
+                DEFAULT_HLS_SEGMENT_SECONDS,
+                DEFAULT_HLS_LIST_SIZE,
+                DEFAULT_HLS_DELETE_SEGMENTS);
+    }
+
+    public MediaServerConfig(
+            int httpPort,
+            int rtspPort,
+            int rtmpPort,
+            int rtpPortMin,
+            int rtpPortMax,
+            boolean transcodeEnabled,
+            String ffmpegBin,
+            String transcodeOutputSuffix,
+            String transcodeInputHost,
+            int transcodeQueueSize,
+            String rtmpTranscoder,
+            boolean javaVisibleWatermarkEnabled,
+            boolean hlsEnabled,
+            String hlsRoot,
+            int hlsSegmentSeconds,
+            int hlsListSize,
+            boolean hlsDeleteSegments) {
         this.httpPort = httpPort;
         this.rtspPort = rtspPort;
         this.rtmpPort = rtmpPort;
@@ -105,6 +163,11 @@ public final class MediaServerConfig {
                 ? DEFAULT_RTMP_TRANSCODER
                 : rtmpTranscoder.trim();
         this.javaVisibleWatermarkEnabled = javaVisibleWatermarkEnabled;
+        this.hlsEnabled = hlsEnabled;
+        this.hlsRoot = hlsRoot == null || hlsRoot.trim().isEmpty() ? DEFAULT_HLS_ROOT : hlsRoot.trim();
+        this.hlsSegmentSeconds = hlsSegmentSeconds <= 0 ? DEFAULT_HLS_SEGMENT_SECONDS : hlsSegmentSeconds;
+        this.hlsListSize = hlsListSize <= 0 ? DEFAULT_HLS_LIST_SIZE : hlsListSize;
+        this.hlsDeleteSegments = hlsDeleteSegments;
     }
 
     public static MediaServerConfig fromEnvironment() {
@@ -131,6 +194,11 @@ public final class MediaServerConfig {
         boolean javaVisibleWatermarkEnabled = parseBoolean(
                 System.getenv("MEDIA_JAVA_VISIBLE_WATERMARK_ENABLED"),
                 DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED);
+        boolean hlsEnabled = parseBoolean(System.getenv("MEDIA_HLS_ENABLED"), DEFAULT_HLS_ENABLED);
+        String hlsRoot = parseString(System.getenv("MEDIA_HLS_ROOT"), DEFAULT_HLS_ROOT);
+        int hlsSegmentSeconds = parsePositiveInt(System.getenv("MEDIA_HLS_SEGMENT_SECONDS"), DEFAULT_HLS_SEGMENT_SECONDS);
+        int hlsListSize = parsePositiveInt(System.getenv("MEDIA_HLS_LIST_SIZE"), DEFAULT_HLS_LIST_SIZE);
+        boolean hlsDeleteSegments = parseBoolean(System.getenv("MEDIA_HLS_DELETE_SEGMENTS"), DEFAULT_HLS_DELETE_SEGMENTS);
         return new MediaServerConfig(
                 http,
                 rtsp,
@@ -143,7 +211,12 @@ public final class MediaServerConfig {
                 inputHost,
                 queueSize,
                 rtmpTranscoder,
-                javaVisibleWatermarkEnabled);
+                javaVisibleWatermarkEnabled,
+                hlsEnabled,
+                hlsRoot,
+                hlsSegmentSeconds,
+                hlsListSize,
+                hlsDeleteSegments);
     }
 
     private static int parsePort(String raw, int fallback) {
@@ -240,6 +313,26 @@ public final class MediaServerConfig {
 
     public boolean javaVisibleWatermarkEnabled() {
         return javaVisibleWatermarkEnabled;
+    }
+
+    public boolean hlsEnabled() {
+        return hlsEnabled;
+    }
+
+    public String hlsRoot() {
+        return hlsRoot;
+    }
+
+    public int hlsSegmentSeconds() {
+        return hlsSegmentSeconds;
+    }
+
+    public int hlsListSize() {
+        return hlsListSize;
+    }
+
+    public boolean hlsDeleteSegments() {
+        return hlsDeleteSegments;
     }
 
     public String version() {

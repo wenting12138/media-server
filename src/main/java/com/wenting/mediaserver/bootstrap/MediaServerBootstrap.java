@@ -2,7 +2,9 @@ package com.wenting.mediaserver.bootstrap;
 
 import com.wenting.mediaserver.api.HttpJsonApiHandler;
 import com.wenting.mediaserver.config.MediaServerConfig;
+import com.wenting.mediaserver.core.hls.HlsStreamFrameProcessor;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
+import com.wenting.mediaserver.core.transcode.CompositeStreamFrameProcessor;
 import com.wenting.mediaserver.core.transcode.StreamTranscodeDispatcher;
 import com.wenting.mediaserver.core.transcode.StreamTranscoderFactory;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
@@ -26,6 +28,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -37,6 +40,8 @@ public final class MediaServerBootstrap implements AutoCloseable {
 
     private final MediaServerConfig config;
     private final StreamTranscodeDispatcher transcodeDispatcher;
+    private final HlsStreamFrameProcessor hlsProcessor;
+    private final CompositeStreamFrameProcessor frameProcessor;
     private final StreamRegistry registry;
     private final EventLoopGroup boss = new NioEventLoopGroup(1);
     private final EventLoopGroup worker = new NioEventLoopGroup();
@@ -46,7 +51,9 @@ public final class MediaServerBootstrap implements AutoCloseable {
     public MediaServerBootstrap(MediaServerConfig config) {
         this.config = config;
         this.transcodeDispatcher = new StreamTranscodeDispatcher(StreamTranscoderFactory.create(config));
-        this.registry = new StreamRegistry(transcodeDispatcher, config.transcodeOutputSuffix());
+        this.hlsProcessor = new HlsStreamFrameProcessor(config);
+        this.frameProcessor = new CompositeStreamFrameProcessor(Arrays.asList(transcodeDispatcher, hlsProcessor));
+        this.registry = new StreamRegistry(frameProcessor, config.transcodeOutputSuffix());
         this.transcodeDispatcher.bindRegistry(this.registry);
         this.rtpUdpPlane = new RtpUdpMediaPlane(worker, config.rtpPortMin(), config.rtpPortMax());
     }
@@ -106,7 +113,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
         for (Channel ch : channels) {
             ch.close();
         }
-        transcodeDispatcher.close();
+        frameProcessor.close();
         rtpUdpPlane.close();
         worker.shutdownGracefully();
         boss.shutdownGracefully();
