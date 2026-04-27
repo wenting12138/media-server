@@ -18,7 +18,7 @@ public final class MediaServerConfig {
     private static final String DEFAULT_RTMP_TRANSCODER = "java";
     private static final boolean DEFAULT_JAVA_VISIBLE_WATERMARK_ENABLED = true;
     private static final boolean DEFAULT_HLS_ENABLED = true;
-    private static final String DEFAULT_HLS_ROOT = "hls";
+    private static final String DEFAULT_HLS_ROOT = "D:/workspace/github/wenting/mediaserver_data/hls";
     private static final int DEFAULT_HLS_SEGMENT_SECONDS = 2;
     private static final int DEFAULT_HLS_LIST_SIZE = 6;
     private static final boolean DEFAULT_HLS_DELETE_SEGMENTS = true;

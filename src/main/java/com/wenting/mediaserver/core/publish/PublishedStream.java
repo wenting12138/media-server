@@ -4,6 +4,7 @@ import com.wenting.mediaserver.core.model.MediaSession;
 import com.wenting.mediaserver.core.model.StreamKey;
 import com.wenting.mediaserver.core.transcode.EncodedMediaPacket;
 import com.wenting.mediaserver.core.transcode.StreamFrameProcessor;
+import com.wenting.mediaserver.protocol.flv.FlvWriter;
 import com.wenting.mediaserver.protocol.rtp.H264RtpDepacketizer;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import com.wenting.mediaserver.protocol.rtmp.RtmpConstants;
@@ -39,25 +40,8 @@ public final class PublishedStream {
     private final CopyOnWriteArrayList<Channel> subscribers = new CopyOnWriteArrayList<Channel>();
     private final CopyOnWriteArrayList<InetSocketAddress> udpVideoSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
     private final CopyOnWriteArrayList<InetSocketAddress> udpAudioSubscribers = new CopyOnWriteArrayList<InetSocketAddress>();
-    private static final class RtmpSubscriber {
-        final ChannelHandlerContext ctx;
-        final int messageStreamId;
-        volatile boolean waitingVideoKeyFrame = true;
-        volatile boolean hasVideoSequenceHeader;
-        RtmpSubscriber(ChannelHandlerContext ctx, int messageStreamId) {
-            this.ctx = ctx;
-            this.messageStreamId = messageStreamId;
-        }
-        @Override
-        public boolean equals(Object o) {
-            return o instanceof RtmpSubscriber && ((RtmpSubscriber) o).ctx == ctx;
-        }
-        @Override
-        public int hashCode() {
-            return System.identityHashCode(ctx);
-        }
-    }
     private final CopyOnWriteArrayList<RtmpSubscriber> rtmpSubscribers = new CopyOnWriteArrayList<RtmpSubscriber>();
+    private final CopyOnWriteArrayList<HttpFlvSubscriber> httpFlvSubscribers = new CopyOnWriteArrayList<HttpFlvSubscriber>();
     private volatile RtpUdpMediaPlane rtpUdpPlane;
     private volatile ByteBuf rtmpMetadata;
     private volatile ByteBuf rtmpVideoSeqHeader;
@@ -154,6 +138,39 @@ public final class PublishedStream {
         }
     }
 
+    public void addHttpFlvSubscriber(ChannelHandlerContext ctx) {
+        if (ctx == null) {
+            return;
+        }
+        HttpFlvSubscriber sub = new HttpFlvSubscriber(ctx);
+        sub.hasVideoSequenceHeader = rtmpVideoSeqHeader != null && rtmpVideoSeqHeader.isReadable();
+        httpFlvSubscribers.addIfAbsent(sub);
+        FlvWriter.writeHeader(ctx);
+        ByteBuf meta = rtmpMetadata;
+        if (meta != null && meta.isReadable()) {
+            FlvWriter.writeTag(ctx, RtmpConstants.TYPE_DATA_AMF0, 0, meta.retainedDuplicate());
+        }
+        ByteBuf vsh = rtmpVideoSeqHeader;
+        if (vsh != null && vsh.isReadable()) {
+            FlvWriter.writeTag(ctx, RtmpConstants.TYPE_VIDEO, 0, vsh.retainedDuplicate());
+        }
+        ByteBuf ash = rtmpAudioSeqHeader;
+        if (ash != null && ash.isReadable()) {
+            FlvWriter.writeTag(ctx, RtmpConstants.TYPE_AUDIO, 0, ash.retainedDuplicate());
+        }
+        ByteBuf kf = rtmpLastVideoKeyFrame;
+        if (sub.hasVideoSequenceHeader && kf != null && kf.isReadable()) {
+            FlvWriter.writeTag(ctx, RtmpConstants.TYPE_VIDEO, 0, kf.retainedDuplicate());
+            sub.waitingVideoKeyFrame = false;
+        }
+    }
+
+    public void removeHttpFlvSubscriber(ChannelHandlerContext ctx) {
+        if (ctx != null) {
+            httpFlvSubscribers.remove(new HttpFlvSubscriber(ctx));
+        }
+    }
+
     public void attachRtpUdpMediaPlane(RtpUdpMediaPlane plane) {
         this.rtpUdpPlane = plane;
     }
@@ -186,7 +203,8 @@ public final class PublishedStream {
         return !subscribers.isEmpty()
                 || !udpVideoSubscribers.isEmpty()
                 || !udpAudioSubscribers.isEmpty()
-                || !rtmpSubscribers.isEmpty();
+                || !rtmpSubscribers.isEmpty()
+                || !httpFlvSubscribers.isEmpty();
     }
 
     /**
@@ -255,6 +273,7 @@ public final class PublishedStream {
         cacheRtmpSeqHeader(payload, true);
         cacheRtmpKeyFrame(payload);
         relayRtmpToSubscribers(RtmpConstants.TYPE_VIDEO, payload, timestamp, messageStreamId);
+        relayRtmpToHttpFlvSubscribers(RtmpConstants.TYPE_VIDEO, payload, timestamp);
         maybeLogStats();
     }
 
@@ -273,6 +292,7 @@ public final class PublishedStream {
                 payload);
         cacheRtmpSeqHeader(payload, false);
         relayRtmpToSubscribers(RtmpConstants.TYPE_AUDIO, payload, timestamp, messageStreamId);
+        relayRtmpToHttpFlvSubscribers(RtmpConstants.TYPE_AUDIO, payload, timestamp);
         maybeLogStats();
     }
 
@@ -288,6 +308,7 @@ public final class PublishedStream {
                 payload);
         cacheRtmpMetadata(payload);
         relayRtmpToSubscribers(RtmpConstants.TYPE_DATA_AMF0, payload, timestamp, messageStreamId);
+        relayRtmpToHttpFlvSubscribers(RtmpConstants.TYPE_DATA_AMF0, payload, timestamp);
     }
 
     private void processPacket(
@@ -487,6 +508,70 @@ public final class PublishedStream {
         }
     }
 
+    private void relayRtmpToHttpFlvSubscribers(int typeId, ByteBuf payload, int timestamp) {
+        List<HttpFlvSubscriber> snapshot = new ArrayList<HttpFlvSubscriber>(httpFlvSubscribers);
+        for (HttpFlvSubscriber sub : snapshot) {
+            if (sub == null || !sub.ctx.channel().isActive()) {
+                httpFlvSubscribers.remove(sub);
+                continue;
+            }
+            if (!sub.ctx.channel().isWritable() && shouldDropForBackpressure(typeId, payload)) {
+                rtmpDroppedPackets.incrementAndGet();
+                continue;
+            }
+            if (typeId == RtmpConstants.TYPE_VIDEO) {
+                if (payload == null || payload.readableBytes() < 2) {
+                    continue;
+                }
+                int frameType = (payload.getUnsignedByte(payload.readerIndex()) >> 4) & 0x0F;
+                int avcPacketType = payload.getUnsignedByte(payload.readerIndex() + 1);
+                boolean keyFrame = frameType == 1;
+                boolean sequenceHeader = avcPacketType == 0;
+                if (sequenceHeader) {
+                    FlvWriter.writeTag(sub.ctx, typeId, timestamp, payload.retainedDuplicate());
+                    videoOutTcpPackets.incrementAndGet();
+                    videoOutTcpBytes.addAndGet(payload.readableBytes());
+                    sub.hasVideoSequenceHeader = true;
+                    sub.waitingVideoKeyFrame = true;
+                    continue;
+                }
+                if (avcPacketType != 1) {
+                    continue;
+                }
+                if (sub.waitingVideoKeyFrame) {
+                    if (!sub.hasVideoSequenceHeader) {
+                        continue;
+                    }
+                    if (!keyFrame) {
+                        continue;
+                    }
+                    if (!containsAvccIdr(payload)) {
+                        continue;
+                    }
+                    ByteBuf vsh = rtmpVideoSeqHeader;
+                    if (vsh != null && vsh.isReadable()) {
+                        FlvWriter.writeTag(sub.ctx, RtmpConstants.TYPE_VIDEO, 0, vsh.retainedDuplicate());
+                        videoOutTcpPackets.incrementAndGet();
+                        videoOutTcpBytes.addAndGet(vsh.readableBytes());
+                        sub.hasVideoSequenceHeader = true;
+                    }
+                    if (!sub.hasVideoSequenceHeader) {
+                        continue;
+                    }
+                    sub.waitingVideoKeyFrame = false;
+                }
+            }
+            FlvWriter.writeTag(sub.ctx, typeId, timestamp, payload.retainedDuplicate());
+            if (typeId == RtmpConstants.TYPE_VIDEO) {
+                videoOutTcpPackets.incrementAndGet();
+                videoOutTcpBytes.addAndGet(payload.readableBytes());
+            } else if (typeId == RtmpConstants.TYPE_AUDIO) {
+                audioOutTcpPackets.incrementAndGet();
+                audioOutTcpBytes.addAndGet(payload.readableBytes());
+            }
+        }
+    }
+
     private boolean shouldDropForBackpressure(int typeId, ByteBuf payload) {
         if (typeId != RtmpConstants.TYPE_VIDEO) {
             return false;
@@ -545,7 +630,11 @@ public final class PublishedStream {
         if (now - statsLogAtMs < STATS_LOG_INTERVAL_MS) {
             return;
         }
-        if (subscribers.isEmpty() && udpVideoSubscribers.isEmpty() && udpAudioSubscribers.isEmpty() && rtmpSubscribers.isEmpty()) {
+        if (subscribers.isEmpty()
+                && udpVideoSubscribers.isEmpty()
+                && udpAudioSubscribers.isEmpty()
+                && rtmpSubscribers.isEmpty()
+                && httpFlvSubscribers.isEmpty()) {
             statsLogAtMs = now;
             return;
         }
@@ -554,7 +643,7 @@ public final class PublishedStream {
                 "RTP relay stats stream={} "
                         + "video(in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=udp:{}) "
                         + "audio(in={}pkts/{}B out=tcp:{}pkts/{}B udp:{}pkts/{}B subs=udp:{}) "
-                        + "subs=tcp:{}, rtmp={}, rtmpDrop={}",
+                        + "subs=tcp:{}, rtmp={}, flv={}, rtmpDrop={}",
                 key.path(),
                 videoInPackets.get(),
                 videoInBytes.get(),
@@ -572,6 +661,7 @@ public final class PublishedStream {
                 udpAudioSubscribers.size(),
                 subscribers.size(),
                 rtmpSubscribers.size(),
+                httpFlvSubscribers.size(),
                 rtmpDroppedPackets.get());
     }
 
@@ -586,6 +676,7 @@ public final class PublishedStream {
         }
         subscribers.clear();
         rtmpSubscribers.clear();
+        httpFlvSubscribers.clear();
         udpVideoSubscribers.clear();
         udpAudioSubscribers.clear();
         ReferenceCountUtil.safeRelease(rtmpMetadata);

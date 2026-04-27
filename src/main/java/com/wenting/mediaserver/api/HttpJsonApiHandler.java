@@ -3,16 +3,20 @@ package com.wenting.mediaserver.api;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wenting.mediaserver.config.MediaServerConfig;
 import com.wenting.mediaserver.core.model.StreamKey;
+import com.wenting.mediaserver.core.model.StreamProtocol;
+import com.wenting.mediaserver.core.publish.PublishedStream;
 import com.wenting.mediaserver.core.registry.StreamRegistry;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.DefaultHttpResponse;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
@@ -60,6 +64,11 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
         String uri = req.uri();
         int q = uri.indexOf('?');
         String path = q >= 0 ? uri.substring(0, q) : uri;
+        HttpFlvRequest flvRequest = parseHttpFlvRequest(path);
+        if (flvRequest != null) {
+            serveHttpFlv(ctx, req, flvRequest);
+            return;
+        }
         if (path.startsWith("/hls/")) {
             serveHlsFile(ctx, req, path);
             return;
@@ -187,5 +196,78 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
             return "video/mp2t";
         }
         return "application/octet-stream";
+    }
+
+    private void serveHttpFlv(ChannelHandlerContext ctx, FullHttpRequest req, HttpFlvRequest flvRequest) throws Exception {
+        PublishedStream stream = resolvePlayback(flvRequest.app, flvRequest.stream);
+        if (stream == null) {
+            send(ctx, req, HttpResponseStatus.NOT_FOUND, ApiResponse.error(404, "stream not found"));
+            return;
+        }
+        HttpResponse resp = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        resp.headers().set(HttpHeaderNames.CONTENT_TYPE, "video/x-flv");
+        resp.headers().set(HttpHeaderNames.CACHE_CONTROL, "no-cache");
+        resp.headers().set(HttpHeaderNames.PRAGMA, "no-cache");
+        resp.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        HttpUtil.setTransferEncodingChunked(resp, true);
+        resp.headers().set(HttpHeaderNames.CONNECTION, "keep-alive");
+        ctx.writeAndFlush(resp);
+
+        stream.addHttpFlvSubscriber(ctx);
+        ctx.channel().closeFuture().addListener(future -> stream.removeHttpFlvSubscriber(ctx));
+        log.info("HTTP-FLV play start request={}/{} resolved={}",
+                flvRequest.app,
+                flvRequest.stream,
+                stream.key().path());
+    }
+
+    private PublishedStream resolvePlayback(String app, String stream) {
+        StreamProtocol[] order = new StreamProtocol[] {
+                StreamProtocol.RTMP,
+                StreamProtocol.RTSP,
+                StreamProtocol.UNKNOWN
+        };
+        for (StreamProtocol protocol : order) {
+            StreamKey key = new StreamKey(protocol, app, stream);
+            java.util.Optional<PublishedStream> found = registry.publishedForPlayback(key);
+            if (found.isPresent()) {
+                return found.get();
+            }
+        }
+        return null;
+    }
+
+    private HttpFlvRequest parseHttpFlvRequest(String path) {
+        if (path == null || !path.startsWith("/live/") || !path.endsWith(".flv")) {
+            return null;
+        }
+        String rel = path.substring("/live/".length(), path.length() - ".flv".length());
+        if (rel.isEmpty()) {
+            return null;
+        }
+        int slash = rel.indexOf('/');
+        String app;
+        String stream;
+        if (slash < 0) {
+            app = "live";
+            stream = rel;
+        } else {
+            app = rel.substring(0, slash);
+            stream = rel.substring(slash + 1);
+        }
+        if (app.trim().isEmpty() || stream.trim().isEmpty()) {
+            return null;
+        }
+        return new HttpFlvRequest(app, stream);
+    }
+
+    private static final class HttpFlvRequest {
+        final String app;
+        final String stream;
+
+        HttpFlvRequest(String app, String stream) {
+            this.app = app;
+            this.stream = stream;
+        }
     }
 }
