@@ -30,6 +30,8 @@ public final class WebRtcSession {
     private final AtomicLong stunBindingSuccessPackets = new AtomicLong();
     private final AtomicLong stunBindingFailurePackets = new AtomicLong();
     private final AtomicLong dtlsIngressPackets = new AtomicLong();
+    private final AtomicLong dtlsOutboundPackets = new AtomicLong();
+    private final AtomicLong dtlsOutboundBytes = new AtomicLong();
     private final AtomicLong rtpIngressPackets = new AtomicLong();
     private final AtomicLong rtcpIngressPackets = new AtomicLong();
     private final AtomicLong unknownUdpIngressPackets = new AtomicLong();
@@ -241,6 +243,14 @@ public final class WebRtcSession {
         return dtlsIngressPackets.get();
     }
 
+    public long dtlsOutboundPackets() {
+        return dtlsOutboundPackets.get();
+    }
+
+    public long dtlsOutboundBytes() {
+        return dtlsOutboundBytes.get();
+    }
+
     public long rtpIngressPackets() {
         return rtpIngressPackets.get();
     }
@@ -392,6 +402,14 @@ public final class WebRtcSession {
             if (dtlsClientHelloAtMs <= 0L) {
                 dtlsClientHelloAtMs = System.currentTimeMillis();
             }
+        }
+        touch();
+    }
+
+    public void onDtlsOutboundPacket(int bytes) {
+        dtlsOutboundPackets.incrementAndGet();
+        if (bytes > 0) {
+            dtlsOutboundBytes.addAndGet(bytes);
         }
         touch();
     }

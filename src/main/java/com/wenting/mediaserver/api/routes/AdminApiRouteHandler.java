@@ -136,6 +136,8 @@ public final class AdminApiRouteHandler {
             row.put("stunBindingFailurePackets", session.stunBindingFailurePackets());
             row.put("lastStunUsername", session.lastStunUsername());
             row.put("dtlsIngressPackets", session.dtlsIngressPackets());
+            row.put("dtlsOutboundPackets", session.dtlsOutboundPackets());
+            row.put("dtlsOutboundBytes", session.dtlsOutboundBytes());
             row.put("rtpIngressPackets", session.rtpIngressPackets());
             row.put("rtcpIngressPackets", session.rtcpIngressPackets());
             row.put("unknownUdpIngressPackets", session.unknownUdpIngressPackets());

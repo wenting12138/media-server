@@ -7,10 +7,10 @@ import com.wenting.mediaserver.core.registry.StreamRegistry;
 import com.wenting.mediaserver.core.transcode.CompositeStreamFrameProcessor;
 import com.wenting.mediaserver.core.transcode.StreamTranscodeDispatcher;
 import com.wenting.mediaserver.core.transcode.StreamTranscoderFactory;
+import com.wenting.mediaserver.core.webrtc.WebRtcBcDtlsEngine;
 import com.wenting.mediaserver.core.webrtc.WebRtcDtlsEngine;
 import com.wenting.mediaserver.core.webrtc.WebRtcDtlsSrtpBootstrap;
 import com.wenting.mediaserver.core.webrtc.WebRtcDtlsMode;
-import com.wenting.mediaserver.core.webrtc.WebRtcJsseDtlsEngine;
 import com.wenting.mediaserver.core.webrtc.WebRtcPseudoDtlsEngine;
 import com.wenting.mediaserver.core.webrtc.WebRtcSessionManager;
 import com.wenting.mediaserver.core.webrtc.WebRtcStreamFrameProcessor;
@@ -174,10 +174,10 @@ public final class MediaServerBootstrap implements AutoCloseable {
             return new WebRtcPseudoDtlsEngine();
         }
         try {
-            return WebRtcJsseDtlsEngine.create();
+            return WebRtcBcDtlsEngine.create();
         } catch (Exception e) {
             if (mode == WebRtcDtlsMode.STRICT) {
-                throw new IllegalStateException("strict dtls mode requires a working JSSE DTLS engine", e);
+                throw new IllegalStateException("strict dtls mode requires a working BouncyCastle DTLS engine", e);
             }
             log.warn("real dtls engine unavailable, fallback to pseudo mode: {}", e.toString());
             return new WebRtcPseudoDtlsEngine();

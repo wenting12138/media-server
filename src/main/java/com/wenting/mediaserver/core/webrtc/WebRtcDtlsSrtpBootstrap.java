@@ -89,6 +89,7 @@ public final class WebRtcDtlsSrtpBootstrap implements UdpIngressObserver {
                 io.netty.util.ReferenceCountUtil.safeRelease(packet);
                 continue;
             }
+            session.onDtlsOutboundPacket(packet.readableBytes());
             rtpUdpMediaPlane.sendUdpTo(sender, packet);
         }
     }
