@@ -101,10 +101,6 @@ public final class JavaStreamTranscoder implements StreamTranscoder {
         ByteBuf payload = packet.payload().retainedDuplicate();
         ByteBuf transformed = payload;
         try {
-            if (!handle.stream.hasAnySubscriber()) {
-                relayBootstrapWhenNoSubscriber(sourceKey, handle.stream, packet, payload);
-                return;
-            }
             if (packet.payloadFormat() == EncodedMediaPacket.PayloadFormat.RTMP_TAG) {
                 transformed = transformRtmpPacket(sourceKey, packet, payload);
                 if (packet.trackType() == EncodedMediaPacket.TrackType.VIDEO

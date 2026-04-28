@@ -63,6 +63,7 @@ public final class WebRtcSession {
     private volatile String mediaPayloadFormat;
     private volatile boolean mediaVideoConfigSeen;
     private volatile boolean mediaVideoKeyFrameSeen;
+    private volatile int videoPayloadType = 96;
     private volatile String lastStunUsername;
 
     WebRtcSession(String id, StreamKey streamKey, String offerSdp, String remoteAddress, long createdAtMs) {
@@ -291,6 +292,16 @@ public final class WebRtcSession {
 
     public boolean mediaVideoKeyFrameSeen() {
         return mediaVideoKeyFrameSeen;
+    }
+
+    public int videoPayloadType() {
+        return videoPayloadType;
+    }
+
+    public void setVideoPayloadType(int pt) {
+        if (pt > 0 && pt < 128) {
+            this.videoPayloadType = pt;
+        }
     }
 
     public void setAnswerSdp(String answerSdp) {

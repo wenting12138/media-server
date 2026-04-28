@@ -52,7 +52,7 @@ public final class WebRtcBcDtlsEngine implements WebRtcDtlsEngine {
 
     private static final Logger log = LoggerFactory.getLogger(WebRtcBcDtlsEngine.class);
     private static final int DTLS_SRTP_EXPORTER_LEN = 2 * (16 + 14);
-    private static final int DATAGRAM_LIMIT = 1500;
+    private static final int DATAGRAM_LIMIT = 8192;
     private static final int OUTBOUND_WAIT_MS = 50;
 
     private final JcaTlsCrypto crypto;
@@ -100,6 +100,7 @@ public final class WebRtcBcDtlsEngine implements WebRtcDtlsEngine {
             return WebRtcDtlsEngineResult.noChange();
         }
         SessionState state = stateFor(session.id());
+        state.attachSession(session);
         byte[] inbound = new byte[dtlsPacket.readableBytes()];
         dtlsPacket.getBytes(dtlsPacket.readerIndex(), inbound);
         state.offerInbound(inbound);
@@ -160,6 +161,7 @@ public final class WebRtcBcDtlsEngine implements WebRtcDtlsEngine {
         private final String sessionId;
         private final QueueDatagramTransport transport = new QueueDatagramTransport();
         private final AtomicBoolean establishedReported = new AtomicBoolean(false);
+        private volatile WebRtcSession session;
         private volatile WebRtcSrtpTransformer srtpTransformer;
         private volatile boolean established;
         private volatile boolean failed;
@@ -177,22 +179,36 @@ public final class WebRtcBcDtlsEngine implements WebRtcDtlsEngine {
         @Override
         public void run() {
             WebRtcTlsServer server = new WebRtcTlsServer(crypto, privateKey, certificate);
+            log.info("WebRTC DTLS handshake starting session={}", sessionId);
             try {
                 new DTLSServerProtocol().accept(server, transport);
                 byte[] keyingMaterial = server.exportDtlsSrtpKeyingMaterial();
                 srtpTransformer = WebRtcSrtpAesCmTransformer.fromDtlsSrtpKeyingMaterial(keyingMaterial, true);
                 established = true;
                 transport.wakeupOutboundWaiters();
-                log.info("WebRTC DTLS established session={}", sessionId);
+                log.info("WebRTC DTLS accept() returned session={}", sessionId);
+                WebRtcSession sess = session;
+                if (sess != null) {
+                    sess.markDtlsEstablished();
+                    if (srtpTransformer != null) {
+                        sess.setSrtpTransformer(srtpTransformer);
+                    }
+                }
             } catch (Exception e) {
                 failed = true;
                 transport.wakeupOutboundWaiters();
-                log.warn("WebRTC DTLS handshake failed session={}: {}", sessionId, e.toString());
+                log.warn("WebRTC DTLS handshake failed session={}", sessionId, e);
+            }
+        }
+
+        private void attachSession(WebRtcSession session) {
+            if (this.session == null && session != null) {
+                this.session = session;
             }
         }
 
         private void offerInbound(byte[] packet) {
-            if (packet == null || packet.length <= 0 || failed) {
+            if (packet == null || packet.length <= 0 || failed || established) {
                 return;
             }
             transport.offerInbound(packet);
@@ -229,7 +245,14 @@ public final class WebRtcBcDtlsEngine implements WebRtcDtlsEngine {
         @Override
         public int receive(byte[] buf, int off, int len, int waitMillis) throws IOException {
             try {
-                byte[] packet = inbound.poll(Math.max(1, waitMillis), TimeUnit.MILLISECONDS);
+                byte[] packet;
+                if (waitMillis < 0) {
+                    packet = inbound.take();
+                } else if (waitMillis == 0) {
+                    packet = inbound.poll();
+                } else {
+                    packet = inbound.poll(waitMillis, TimeUnit.MILLISECONDS);
+                }
                 if (packet == null) {
                     return -1;
                 }
@@ -296,6 +319,7 @@ public final class WebRtcBcDtlsEngine implements WebRtcDtlsEngine {
         private final PrivateKey privateKey;
         private final Certificate certificate;
         private boolean clientOfferedSrtpProfile;
+        private volatile byte[] exportedKeyingMaterial;
 
         private WebRtcTlsServer(JcaTlsCrypto crypto, PrivateKey privateKey, Certificate certificate) {
             super(crypto);
@@ -356,11 +380,18 @@ public final class WebRtcBcDtlsEngine implements WebRtcDtlsEngine {
                     sigAlg);
         }
 
+        @Override
+        public void notifyHandshakeComplete() throws IOException {
+            super.notifyHandshakeComplete();
+            this.exportedKeyingMaterial = context.exportKeyingMaterial(
+                    ExporterLabel.dtls_srtp, null, DTLS_SRTP_EXPORTER_LEN);
+        }
+
         private byte[] exportDtlsSrtpKeyingMaterial() {
-            if (context == null) {
-                throw new IllegalStateException("DTLS context unavailable");
+            if (exportedKeyingMaterial == null) {
+                throw new IllegalStateException("DTLS keying material not exported");
             }
-            return context.exportKeyingMaterial(ExporterLabel.dtls_srtp, null, DTLS_SRTP_EXPORTER_LEN);
+            return exportedKeyingMaterial;
         }
 
         private static boolean hasSrtpAes128Sha1_80(UseSRTPData srtp) {

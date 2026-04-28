@@ -97,6 +97,7 @@ public final class WhepRouteHandler {
                 offerSdp,
                 String.valueOf(ctx.channel().remoteAddress()));
         session.applyOfferInfo(offerInfo);
+        session.setVideoPayloadType(offerInfo.videoPayloadType());
         String candidateIp = resolveLocalIp(ctx);
         String answerSdp;
         try {
@@ -107,6 +108,7 @@ public final class WhepRouteHandler {
             return;
         }
         session.setAnswerSdp(answerSdp);
+        log.info("WHEP offer  answered offerSdp=\r\n{} answerSdp=\r\n{}", offerSdp, answerSdp);
         String resourcePath = "/whep/session/" + session.id();
         Map<String, String> headers = new HashMap<String, String>();
         headers.put(HttpHeaderNames.LOCATION.toString(), resourcePath);

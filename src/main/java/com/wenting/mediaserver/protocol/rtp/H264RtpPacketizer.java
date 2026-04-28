@@ -17,11 +17,22 @@ public final class H264RtpPacketizer {
     private static final Logger log = LoggerFactory.getLogger(H264RtpPacketizer.class);
     private static final int MAX_RTP_PAYLOAD = 1400;
     private static final int NAL_FU_A = 28;
-    private static final int H264_PAYLOAD_TYPE = 96;
     private static final int RTP_VERSION = 2;
-    private static final int SSRC = 0x12345678;
+    private static final int DEFAULT_SSRC = 0x12345678;
 
     private final AtomicInteger sequenceNumber = new AtomicInteger(0);
+    private int payloadType = 96;
+    private int ssrc = DEFAULT_SSRC;
+
+    public void setPayloadType(int pt) {
+        if (pt > 0 && pt < 128) {
+            this.payloadType = pt;
+        }
+    }
+
+    public void setSsrc(int ssrc) {
+        this.ssrc = ssrc;
+    }
 
     public void packetize(ByteBuf nalUnit, int timestamp90khz, Consumer<ByteBuf> onRtp) {
         packetize(nalUnit, timestamp90khz, true, onRtp);
@@ -69,10 +80,10 @@ public final class H264RtpPacketizer {
         ByteBuf buf = Unpooled.buffer(12 + payloadLen);
         int seq = sequenceNumber.getAndIncrement() & 0xFFFF;
         buf.writeByte((RTP_VERSION << 6));
-        buf.writeByte((marker ? 0x80 : 0x00) | H264_PAYLOAD_TYPE);
+        buf.writeByte((marker ? 0x80 : 0x00) | payloadType);
         buf.writeShort(seq);
         buf.writeInt(timestamp90khz);
-        buf.writeInt(SSRC);
+        buf.writeInt(ssrc);
         return buf;
     }
 }

@@ -336,13 +336,13 @@ public final class WebRtcStreamFrameProcessor implements StreamFrameProcessor {
     private SessionRelayState relayState(WebRtcSession session) {
         String id = session == null ? null : session.id();
         if (id == null || id.trim().isEmpty()) {
-            return new SessionRelayState(session == null ? null : session.streamKey());
+            return new SessionRelayState(session == null ? null : session.streamKey(), 96);
         }
         SessionRelayState exists = relayStates.get(id);
         if (exists != null) {
             return exists;
         }
-        SessionRelayState created = new SessionRelayState(session.streamKey());
+        SessionRelayState created = new SessionRelayState(session.streamKey(), session.videoPayloadType());
         SessionRelayState prev = relayStates.putIfAbsent(id, created);
         return prev == null ? created : prev;
     }
@@ -512,14 +512,16 @@ public final class WebRtcStreamFrameProcessor implements StreamFrameProcessor {
 
     private static final class SessionRelayState {
         private final StreamKey streamKey;
-        private final H264RtpPacketizer videoPacketizer = new H264RtpPacketizer();
+        private final H264RtpPacketizer videoPacketizer;
         private volatile int firstRtmpPtsMs = Integer.MIN_VALUE;
         private volatile int nalLengthSize = 4;
         private volatile byte[] sps;
         private volatile byte[] pps;
 
-        private SessionRelayState(StreamKey streamKey) {
+        private SessionRelayState(StreamKey streamKey, int payloadType) {
             this.streamKey = streamKey;
+            this.videoPacketizer = new H264RtpPacketizer();
+            this.videoPacketizer.setPayloadType(payloadType);
         }
 
         private int toRtpTimestamp90k(int ptsMs) {

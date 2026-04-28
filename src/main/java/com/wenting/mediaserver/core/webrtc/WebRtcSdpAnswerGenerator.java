@@ -118,6 +118,13 @@ public final class WebRtcSdpAnswerGenerator {
             appendAttributeValues(sdp, "a=fmtp:", answer.fmtp, answer.acceptedPayloads);
             appendAttributeValues(sdp, "a=rtcp-fb:", answer.rtcpFb, answer.acceptedPayloads);
 
+            if ("video".equals(answer.kind)) {
+                int ssrc = 0x12345678;
+                sdp.append("a=ssrc:").append(ssrc).append(" cname:media-server").append(CRLF);
+                sdp.append("a=ssrc:").append(ssrc).append(" msid:WMS0 video0").append(CRLF);
+                sdp.append("a=msid:WMS0 video0").append(CRLF);
+            }
+
             sdp.append("a=candidate:1 1 udp 2130706431 ").append(ip).append(' ').append(port).append(" typ host").append(CRLF);
             sdp.append("a=end-of-candidates").append(CRLF);
         }

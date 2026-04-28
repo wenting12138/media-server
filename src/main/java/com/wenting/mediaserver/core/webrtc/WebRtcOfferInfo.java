@@ -14,6 +14,7 @@ public final class WebRtcOfferInfo {
     private final int mediaCount;
     private final int audioMediaCount;
     private final int videoMediaCount;
+    private final int videoPayloadType;
 
     private WebRtcOfferInfo(
             String iceUfrag,
@@ -22,7 +23,8 @@ public final class WebRtcOfferInfo {
             String setupRole,
             int mediaCount,
             int audioMediaCount,
-            int videoMediaCount) {
+            int videoMediaCount,
+            int videoPayloadType) {
         this.iceUfrag = iceUfrag;
         this.icePwd = icePwd;
         this.fingerprint = fingerprint;
@@ -30,6 +32,7 @@ public final class WebRtcOfferInfo {
         this.mediaCount = mediaCount;
         this.audioMediaCount = audioMediaCount;
         this.videoMediaCount = videoMediaCount;
+        this.videoPayloadType = videoPayloadType;
     }
 
     public String iceUfrag() {
@@ -60,6 +63,10 @@ public final class WebRtcOfferInfo {
         return videoMediaCount;
     }
 
+    public int videoPayloadType() {
+        return videoPayloadType;
+    }
+
     public static WebRtcOfferInfo parse(String offerSdp) {
         if (offerSdp == null || offerSdp.trim().isEmpty()) {
             throw new IllegalArgumentException("empty offer sdp");
@@ -72,6 +79,8 @@ public final class WebRtcOfferInfo {
         int mediaCount = 0;
         int audioCount = 0;
         int videoCount = 0;
+        int videoPt = 96;
+        boolean inVideoSection = false;
         for (String raw : lines) {
             if (raw == null) {
                 continue;
@@ -83,10 +92,38 @@ public final class WebRtcOfferInfo {
             if (line.startsWith("m=")) {
                 mediaCount++;
                 String media = line.substring(2).trim().toLowerCase(Locale.ROOT);
+                inVideoSection = media.startsWith("video ");
                 if (media.startsWith("audio ")) {
                     audioCount++;
-                } else if (media.startsWith("video ")) {
+                } else if (inVideoSection) {
                     videoCount++;
+                    // default to first payload type in video m-line if no H264 found
+                    String[] tokens = media.split("\\s+");
+                    if (tokens.length >= 4) {
+                        try {
+                            videoPt = Integer.parseInt(tokens[3]);
+                        } catch (NumberFormatException ignore) {
+                        }
+                    }
+                }
+                continue;
+            }
+            if (inVideoSection && line.startsWith("a=rtpmap:")) {
+                String value = line.substring("a=rtpmap:".length()).trim();
+                int sp = value.indexOf(' ');
+                if (sp > 0) {
+                    String ptStr = value.substring(0, sp).trim();
+                    String codec = value.substring(sp + 1).trim().toLowerCase(Locale.ROOT);
+                    int slash = codec.indexOf('/');
+                    if (slash > 0) {
+                        codec = codec.substring(0, slash);
+                    }
+                    if ("h264".equals(codec)) {
+                        try {
+                            videoPt = Integer.parseInt(ptStr);
+                        } catch (NumberFormatException ignore) {
+                        }
+                    }
                 }
                 continue;
             }
@@ -124,7 +161,7 @@ public final class WebRtcOfferInfo {
         if (!"actpass".equals(setup) && !"active".equals(setup) && !"passive".equals(setup)) {
             throw new IllegalArgumentException("offer setup role not supported: " + setup);
         }
-        return new WebRtcOfferInfo(iceUfrag, icePwd, fingerprint, setup, mediaCount, audioCount, videoCount);
+        return new WebRtcOfferInfo(iceUfrag, icePwd, fingerprint, setup, mediaCount, audioCount, videoCount, videoPt);
     }
 
     private static String parseValue(String line, String prefix) {
