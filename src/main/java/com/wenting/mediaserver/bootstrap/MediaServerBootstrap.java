@@ -7,6 +7,7 @@ import com.wenting.mediaserver.core.registry.StreamRegistry;
 import com.wenting.mediaserver.core.transcode.CompositeStreamFrameProcessor;
 import com.wenting.mediaserver.core.transcode.StreamTranscodeDispatcher;
 import com.wenting.mediaserver.core.transcode.StreamTranscoderFactory;
+import com.wenting.mediaserver.core.webrtc.WebRtcSessionManager;
 import com.wenting.mediaserver.protocol.rtp.RtpUdpMediaPlane;
 import com.wenting.mediaserver.protocol.rtmp.RtmpChannelInitializer;
 import com.wenting.mediaserver.protocol.rtsp.RtspChannelInitializer;
@@ -41,6 +42,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
     private final MediaServerConfig config;
     private final StreamTranscodeDispatcher transcodeDispatcher;
     private final HlsStreamFrameProcessor hlsProcessor;
+    private final WebRtcSessionManager webRtcSessionManager;
     private final CompositeStreamFrameProcessor frameProcessor;
     private final StreamRegistry registry;
     private final EventLoopGroup boss = new NioEventLoopGroup(1);
@@ -52,6 +54,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
         this.config = config;
         this.transcodeDispatcher = new StreamTranscodeDispatcher(StreamTranscoderFactory.create(config));
         this.hlsProcessor = new HlsStreamFrameProcessor(config);
+        this.webRtcSessionManager = new WebRtcSessionManager();
         this.frameProcessor = new CompositeStreamFrameProcessor(Arrays.asList(transcodeDispatcher, hlsProcessor));
         this.registry = new StreamRegistry(frameProcessor, config.transcodeOutputSuffix());
         this.transcodeDispatcher.bindRegistry(this.registry);
@@ -72,7 +75,7 @@ public final class MediaServerBootstrap implements AutoCloseable {
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(new HttpServerCodec());
                         ch.pipeline().addLast(new HttpObjectAggregator(65536));
-                        ch.pipeline().addLast(new HttpJsonApiHandler(config, registry, hlsProcessor));
+                        ch.pipeline().addLast(new HttpJsonApiHandler(config, registry, hlsProcessor, webRtcSessionManager));
                     }
                 })
                 .option(ChannelOption.SO_BACKLOG, 512)
