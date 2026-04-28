@@ -9,6 +9,7 @@ import com.wenting.mediaserver.api.routes.ApiHttpResponder;
 import com.wenting.mediaserver.api.routes.HlsRouteHandler;
 import com.wenting.mediaserver.api.routes.HttpFlvRouteHandler;
 import com.wenting.mediaserver.api.routes.PlaybackStreamResolver;
+import com.wenting.mediaserver.api.routes.WebRtcTestPageRouteHandler;
 import com.wenting.mediaserver.api.routes.WhepRouteHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -17,6 +18,8 @@ import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.function.IntSupplier;
 
 /**
  * Minimal admin HTTP API. Paths mirror a subset of ZLM's {@code /index/api/*} style for familiarity.
@@ -30,6 +33,7 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
     private final WhepRouteHandler whepRouteHandler;
     private final HttpFlvRouteHandler httpFlvRouteHandler;
     private final HlsRouteHandler hlsRouteHandler;
+    private final WebRtcTestPageRouteHandler webRtcTestPageRouteHandler;
     private final AdminApiRouteHandler adminApiRouteHandler;
 
     public HttpJsonApiHandler(
@@ -37,12 +41,37 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
             StreamRegistry registry,
             HlsStreamFrameProcessor hlsProcessor,
             WebRtcSessionManager webRtcSessionManager) {
+        this(config, registry, hlsProcessor, webRtcSessionManager, null);
+    }
+
+    public HttpJsonApiHandler(
+            MediaServerConfig config,
+            StreamRegistry registry,
+            HlsStreamFrameProcessor hlsProcessor,
+            WebRtcSessionManager webRtcSessionManager,
+            String webRtcLocalFingerprint) {
+        this(config, registry, hlsProcessor, webRtcSessionManager, webRtcLocalFingerprint, null);
+    }
+
+    public HttpJsonApiHandler(
+            MediaServerConfig config,
+            StreamRegistry registry,
+            HlsStreamFrameProcessor hlsProcessor,
+            WebRtcSessionManager webRtcSessionManager,
+            String webRtcLocalFingerprint,
+            IntSupplier webRtcLocalCandidatePortSupplier) {
         this.webRtcSessionManager = webRtcSessionManager == null ? new WebRtcSessionManager() : webRtcSessionManager;
         this.responder = new ApiHttpResponder();
         PlaybackStreamResolver playbackResolver = new PlaybackStreamResolver(registry);
-        this.whepRouteHandler = new WhepRouteHandler(playbackResolver, this.webRtcSessionManager, responder);
+        this.whepRouteHandler = new WhepRouteHandler(
+                playbackResolver,
+                this.webRtcSessionManager,
+                responder,
+                webRtcLocalFingerprint,
+                webRtcLocalCandidatePortSupplier);
         this.httpFlvRouteHandler = new HttpFlvRouteHandler(playbackResolver, responder);
         this.hlsRouteHandler = new HlsRouteHandler(config, hlsProcessor, responder);
+        this.webRtcTestPageRouteHandler = new WebRtcTestPageRouteHandler(responder);
         this.adminApiRouteHandler = new AdminApiRouteHandler(config, registry, this.webRtcSessionManager, responder);
     }
 
@@ -66,6 +95,9 @@ public final class HttpJsonApiHandler extends SimpleChannelInboundHandler<FullHt
                 return;
             }
             if (hlsRouteHandler.tryHandle(ctx, req, path)) {
+                return;
+            }
+            if (webRtcTestPageRouteHandler.tryHandle(ctx, req, path)) {
                 return;
             }
             if (adminApiRouteHandler.tryHandle(ctx, req, path)) {

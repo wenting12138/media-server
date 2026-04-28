@@ -5,6 +5,7 @@ import com.wenting.mediaserver.core.model.StreamKey;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.net.InetSocketAddress;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -57,6 +58,37 @@ public final class WebRtcSessionManager {
 
     public List<WebRtcSession> listSessions() {
         return new ArrayList<WebRtcSession>(sessions.values());
+    }
+
+    public WebRtcSession findBySelectedRtpEndpoint(InetSocketAddress endpoint) {
+        if (endpoint == null) {
+            return null;
+        }
+        for (WebRtcSession session : sessions.values()) {
+            if (session == null) {
+                continue;
+            }
+            if (session.matchesSelectedRtpEndpoint(endpoint)) {
+                return session;
+            }
+        }
+        return null;
+    }
+
+    public WebRtcSession findByLocalIceUfrag(String localIceUfrag) {
+        if (localIceUfrag == null || localIceUfrag.trim().isEmpty()) {
+            return null;
+        }
+        String target = localIceUfrag.trim();
+        for (WebRtcSession session : sessions.values()) {
+            if (session == null || session.localIceUfrag() == null) {
+                continue;
+            }
+            if (target.equals(session.localIceUfrag())) {
+                return session;
+            }
+        }
+        return null;
     }
 
     public int cleanupExpired(long nowMs) {

@@ -1,6 +1,7 @@
 package com.wenting.mediaserver.protocol.rtp;
 
 import com.wenting.mediaserver.core.publish.PublishedStream;
+import com.wenting.mediaserver.core.registry.UdpIngressObserver;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -34,6 +35,7 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
     private volatile int egressEvenPort = -1;
     private final Object egressLock = new Object();
     private final AtomicBoolean egressFirstPacketLogged = new AtomicBoolean(false);
+    private volatile UdpIngressObserver egressIngressObserver;
 
     public RtpUdpMediaPlane(EventLoopGroup worker, int portRangeMin, int portRangeMax) {
         this.worker = worker;
@@ -75,13 +77,35 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
         return ch == null ? -1 : ((InetSocketAddress) ch.localAddress()).getPort();
     }
 
+    public void setEgressIngressObserver(UdpIngressObserver observer) {
+        this.egressIngressObserver = observer;
+    }
+
     private Bootstrap newBootstrapOutbound() {
         Bootstrap b = new Bootstrap();
         b.group(worker).channel(NioDatagramChannel.class)
                 .handler(new ChannelInitializer<DatagramChannel>() {
                     @Override
                     protected void initChannel(DatagramChannel ch) {
-                        // outbound RTP only
+                        ch.pipeline().addLast(new SimpleChannelInboundHandler<DatagramPacket>() {
+                            @Override
+                            protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) {
+                                UdpIngressObserver observer = egressIngressObserver;
+                                if (observer == null) {
+                                    return;
+                                }
+                                ByteBuf content = msg.content();
+                                if (content == null || !content.isReadable()) {
+                                    return;
+                                }
+                                ByteBuf copy = content.retainedDuplicate();
+                                try {
+                                    observer.onDatagram(msg.sender(), msg.recipient(), copy);
+                                } finally {
+                                    ReferenceCountUtil.safeRelease(copy);
+                                }
+                            }
+                        });
                     }
                 });
         return b;
@@ -108,16 +132,23 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
      * Sends one RTP datagram to a subscriber. Takes ownership of {@code rtp} (released if not sent).
      */
     public void sendRtpTo(InetSocketAddress destination, ByteBuf rtp) {
+        sendUdpTo(destination, rtp);
+    }
+
+    /**
+     * Sends one UDP datagram to destination from shared egress socket. Takes ownership of {@code payload}.
+     */
+    public void sendUdpTo(InetSocketAddress destination, ByteBuf payload) {
         DatagramChannel ch = egressRtpChannel;
         if (ch == null || !ch.isActive() || destination == null) {
-            ReferenceCountUtil.safeRelease(rtp);
+            ReferenceCountUtil.safeRelease(payload);
             return;
         }
         ch.eventLoop().execute(new Runnable() {
             @Override
             public void run() {
                 if (!ch.isActive()) {
-                    ReferenceCountUtil.safeRelease(rtp);
+                    ReferenceCountUtil.safeRelease(payload);
                     return;
                 }
                 if (egressFirstPacketLogged.compareAndSet(false, true)) {
@@ -125,9 +156,9 @@ public final class RtpUdpMediaPlane implements AutoCloseable {
                             "RTP UDP egress first packet local={} -> remote={} bytes={}",
                             ch.localAddress(),
                             destination,
-                            rtp.readableBytes());
+                            payload.readableBytes());
                 }
-                ch.writeAndFlush(new DatagramPacket(rtp, destination));
+                ch.writeAndFlush(new DatagramPacket(payload, destination));
             }
         });
     }

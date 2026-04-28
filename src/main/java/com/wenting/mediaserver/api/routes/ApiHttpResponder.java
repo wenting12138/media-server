@@ -14,6 +14,7 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 
+import java.util.Collections;
 import java.util.Map;
 
 public final class ApiHttpResponder {
@@ -33,6 +34,16 @@ public final class ApiHttpResponder {
     }
 
     public void sendBytes(ChannelHandlerContext ctx, FullHttpRequest req, HttpResponseStatus status, String contentType, byte[] bytes) {
+        sendBytes(ctx, req, status, contentType, bytes, Collections.<String, String>emptyMap());
+    }
+
+    public void sendBytes(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            HttpResponseStatus status,
+            String contentType,
+            byte[] bytes,
+            Map<String, String> headers) {
         byte[] safe = bytes == null ? new byte[0] : bytes;
         FullHttpResponse resp = new DefaultFullHttpResponse(
                 HttpVersion.HTTP_1_1,
@@ -40,6 +51,14 @@ public final class ApiHttpResponder {
                 Unpooled.wrappedBuffer(safe));
         if (contentType != null && !contentType.isEmpty()) {
             resp.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType);
+        }
+        if (headers != null) {
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                if (entry == null || entry.getKey() == null || entry.getValue() == null) {
+                    continue;
+                }
+                resp.headers().set(entry.getKey(), entry.getValue());
+            }
         }
         resp.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, safe.length);
         writeAndCloseWhenNeeded(ctx, req, resp);

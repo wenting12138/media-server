@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebRTC WHEP Test</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    body {
+      margin: 0;
+      background: #0f1115;
+      color: #e8ecf2;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 14px;
+    }
+    .panel {
+      background: #171b23;
+      border: 1px solid #2a3342;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .title {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 10px 0;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 90px 1fr;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    input, select, button, textarea {
+      background: #10141c;
+      border: 1px solid #2a3342;
+      color: #e8ecf2;
+      border-radius: 6px;
+      padding: 7px 8px;
+      font-size: 13px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    video {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #06080d;
+      border: 1px solid #2a3342;
+      border-radius: 8px;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    textarea {
+      min-height: 180px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+    @media (max-width: 900px) {
+      .wrap {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <section class="panel">
+    <h1 class="title">WHEP Playback</h1>
+    <div class="row"><label for="protocol">Protocol</label><select id="protocol"><option value="auto">auto</option><option value="rtmp">rtmp</option><option value="rtsp">rtsp</option></select></div>
+    <div class="row"><label for="app">App</label><input id="app" value="live"></div>
+    <div class="row"><label for="stream">Stream</label><input id="stream" placeholder="stream id"></div>
+    <div class="row"><label for="whepUrl">WHEP URL</label><input id="whepUrl" value=""></div>
+    <div class="actions">
+      <button id="startBtn">Start</button>
+      <button id="stopBtn">Stop</button>
+    </div>
+    <div class="status" id="statusBox"></div>
+  </section>
+  <section class="panel">
+    <h2 class="title">Player</h2>
+    <video id="video" autoplay playsinline controls muted></video>
+    <h3 class="title" style="margin-top:12px;">Logs</h3>
+    <textarea id="logBox" readonly></textarea>
+  </section>
+</div>
+<script>
+  const state = {
+    pc: null,
+    sessionId: null,
+    sessionUrl: null,
+    etag: null,
+    pollTimer: null
+  };
+
+  const ui = {
+    protocol: document.getElementById("protocol"),
+    app: document.getElementById("app"),
+    stream: document.getElementById("stream"),
+    whepUrl: document.getElementById("whepUrl"),
+    startBtn: document.getElementById("startBtn"),
+    stopBtn: document.getElementById("stopBtn"),
+    video: document.getElementById("video"),
+    statusBox: document.getElementById("statusBox"),
+    logBox: document.getElementById("logBox")
+  };
+
+  function log(msg) {
+    const now = new Date().toISOString().substr(11, 12);
+    ui.logBox.value += `[${now}] ${msg}\n`;
+    ui.logBox.scrollTop = ui.logBox.scrollHeight;
+  }
+
+  function setStatus(obj) {
+    ui.statusBox.textContent = Object.entries(obj).map(([k, v]) => `${k}: ${v}`).join("\n");
+  }
+
+  function resolveWhepUrl() {
+    const custom = ui.whepUrl.value.trim();
+    if (custom) return custom;
+    const protocol = ui.protocol.value;
+    const app = encodeURIComponent(ui.app.value.trim() || "live");
+    const stream = encodeURIComponent(ui.stream.value.trim());
+    if (!stream) throw new Error("stream is required");
+    if (protocol === "auto") return `/whep/${app}/${stream}`;
+    return `/whep/${protocol}/${app}/${stream}`;
+  }
+
+  function parseLocalIceInfo(sdp) {
+    const lines = (sdp || "").split(/\r?\n/);
+    let ufrag = "";
+    let pwd = "";
+    for (const line of lines) {
+      if (!ufrag && line.startsWith("a=ice-ufrag:")) ufrag = line.substring(12).trim();
+      if (!pwd && line.startsWith("a=ice-pwd:")) pwd = line.substring(10).trim();
+    }
+    return { ufrag, pwd };
+  }
+
+  async function sendPatch(candidate) {
+    if (!state.sessionUrl || !candidate || !candidate.candidate) return;
+    const local = parseLocalIceInfo(state.pc.localDescription ? state.pc.localDescription.sdp : "");
+    let frag = "";
+    if (local.ufrag) frag += `a=ice-ufrag:${local.ufrag}\r\n`;
+    if (local.pwd) frag += `a=ice-pwd:${local.pwd}\r\n`;
+    if (candidate.sdpMid !== null && candidate.sdpMid !== undefined) frag += `a=mid:${candidate.sdpMid}\r\n`;
+    frag += `a=${candidate.candidate}\r\n`;
+    const headers = { "Content-Type": "application/trickle-ice-sdpfrag" };
+    if (state.etag) headers["If-Match"] = state.etag;
+    const resp = await fetch(state.sessionUrl, { method: "PATCH", headers, body: frag });
+    if (!resp.ok && resp.status !== 204) {
+      const text = await resp.text();
+      log(`PATCH failed ${resp.status} ${text}`);
+    }
+  }
+
+  async function pollSession() {
+    if (!state.sessionId) return;
+    try {
+      const resp = await fetch("/index/api/getWebRtcSessionList");
+      if (!resp.ok) return;
+      const body = await resp.json();
+      const sessions = (((body || {}).data || {}).sessions || []);
+      const s = sessions.find(x => x.sessionId === state.sessionId);
+      if (!s) return;
+      setStatus({
+        session: s.sessionId,
+        stream: s.stream,
+        transportState: s.transportState,
+        srtpReady: s.srtpReady,
+        dtlsIngressPackets: s.dtlsIngressPackets,
+        rtpIngressPackets: s.rtpIngressPackets,
+        plainRtpRelayPackets: s.plainRtpRelayPackets,
+        srtpProtectedPackets: s.srtpProtectedPackets
+      });
+    } catch (e) {
+      log(`poll error ${e.message}`);
+    }
+  }
+
+  async function start() {
+    await stop();
+    const whepUrl = resolveWhepUrl();
+    ui.whepUrl.value = whepUrl;
+    const pc = new RTCPeerConnection();
+    state.pc = pc;
+    pc.addTransceiver("video", { direction: "recvonly" });
+    pc.addTransceiver("audio", { direction: "recvonly" });
+    pc.ontrack = (ev) => {
+      if (!ui.video.srcObject) ui.video.srcObject = ev.streams[0];
+      log(`ontrack kind=${ev.track.kind}`);
+    };
+    pc.onconnectionstatechange = () => log(`pc connectionState=${pc.connectionState}`);
+    pc.oniceconnectionstatechange = () => log(`pc iceConnectionState=${pc.iceConnectionState}`);
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate) sendPatch(ev.candidate).catch(err => log(`patch err ${err.message}`));
+    };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    const resp = await fetch(whepUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/sdp" },
+      body: offer.sdp
+    });
+    const answerSdp = await resp.text();
+    if (!resp.ok) {
+      throw new Error(`POST ${resp.status} ${answerSdp}`);
+    }
+    const location = resp.headers.get("Location");
+    const etag = resp.headers.get("ETag");
+    if (!location) throw new Error("missing Location header");
+    state.sessionUrl = new URL(location, window.location.origin).toString();
+    state.sessionId = state.sessionUrl.split("/").pop();
+    state.etag = etag;
+
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    log(`started session=${state.sessionId}`);
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    state.pollTimer = setInterval(pollSession, 1000);
+    await pollSession();
+  }
+
+  async function stop() {
+    if (state.pollTimer) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+    if (state.sessionUrl) {
+      try {
+        await fetch(state.sessionUrl, { method: "DELETE" });
+      } catch (e) {
+        log(`delete session error ${e.message}`);
+      }
+    }
+    if (state.pc) {
+      try { state.pc.close(); } catch (e) {}
+    }
+    state.pc = null;
+    state.sessionId = null;
+    state.sessionUrl = null;
+    state.etag = null;
+    ui.video.srcObject = null;
+    setStatus({ session: "-", stream: "-", transportState: "-" });
+  }
+
+  ui.startBtn.addEventListener("click", () => start().catch(e => log(`start failed: ${e.message}`)));
+  ui.stopBtn.addEventListener("click", () => stop().catch(e => log(`stop failed: ${e.message}`)));
+  setStatus({ session: "-", stream: "-", transportState: "-" });
+</script>
+</body>
+</html>
